@@ -378,20 +378,30 @@ class ToolGroupComponent extends Container {
 	thinkingMs = 0;
 	/** Pointer is over the digest line — the label renders in the accent color. */
 	hovered = false;
-	/** Thinking blocks folded into this group, revealed by Ctrl+O. */
-	private thinkingText: string[] = [];
+	/** Members plus the thinking folded into the group, in arrival order so an
+	 *  expanded group can be read chronologically. */
+	private timeline: Array<{ kind: "thinking"; text: string } | { kind: "tool"; tool: AnyTool }> = [];
 	private lastHeight = 0;
 
 	addTool(tool: AnyTool): void {
 		this.tools.push(tool);
+		this.timeline.push({ kind: "tool", tool });
 	}
 
 	addThinking(ms: number): void {
 		if (ms > 0) this.thinkingMs += ms;
 	}
 
+	/** Prepend/append order matters: callers push thinking that arrived before
+	 *  the next tool, immediately before adding that tool. */
 	addThinkingText(blocks: string[]): void {
-		for (const block of blocks) if (block.trim()) this.thinkingText.push(block);
+		for (const block of blocks) {
+			if (block.trim()) this.timeline.push({ kind: "thinking", text: block });
+		}
+	}
+
+	hasThinkingText(): boolean {
+		return this.timeline.some((segment) => segment.kind === "thinking");
 	}
 
 	/** Row index of the digest line: 0 is the blank separator row. */
@@ -465,25 +475,29 @@ class ToolGroupComponent extends Container {
 
 		// Blank separator row, then the CC digest. Deliberately no status dot:
 		// a group is not one tool and the digest already carries the tense.
-		const summary = groupSummary(this.tools, this.thinkingMs, status, this.thinkingText.length > 0);
+		const summary = groupSummary(this.tools, this.thinkingMs, status, this.hasThinkingText());
 		const lines: string[] = ["", clampLine(`  ${theme.fg(this.hovered ? "accent" : "muted", summary)}`, safeWidth)];
 		if (this.expanded) {
-			// Ctrl+O reveals the thinking that produced the batch. The collapsed
-			// transcript hides it (thinking.ts transformer renders nothing), so the
-			// group is the only place it can come back.
-			for (const block of this.thinkingText) {
-				lines.push(clampLine(`  ${dim(italic(THINKING_TITLE))}`, safeWidth));
-				for (const row of wrapTextWithAnsi(block, Math.max(1, safeWidth - 4))) {
-					lines.push(clampLine(`    ${dim(row)}`, safeWidth));
-				}
-				lines.push("");
-			}
+			// Ctrl+O reveals the thinking that produced the batch, interleaved with
+			// its tools in arrival order. The collapsed transcript hides thinking
+			// (thinking.ts transformer renders nothing), so the group is the only
+			// place it can come back.
 			const childWidth = Math.max(1, safeWidth - 4);
-			for (let index = 0; index < this.tools.length; index++) {
-				const tool = this.tools[index]!;
+			let toolIndex = 0;
+			for (const segment of this.timeline) {
+				if (segment.kind === "thinking") {
+					lines.push(clampLine(`  ${dim(italic(THINKING_TITLE))}`, safeWidth));
+					for (const row of wrapTextWithAnsi(segment.text, Math.max(1, safeWidth - 4))) {
+						lines.push(clampLine(`    ${dim(row)}`, safeWidth));
+					}
+					lines.push("");
+					continue;
+				}
+				const tool = segment.tool;
 				lines.push(
-					...branchLine(expandedToolLines(tool, childWidth), index, this.tools.length, safeWidth, groupLight(toolStatus(tool), theme), theme),
+					...branchLine(expandedToolLines(tool, childWidth), toolIndex, this.tools.length, safeWidth, groupLight(toolStatus(tool), theme), theme),
 				);
+				toolIndex += 1;
 			}
 		}
 		this.lastHeight = lines.length;
@@ -598,9 +612,9 @@ function maybeGroupToolComponent(parent: unknown, component: unknown): void {
 	const previous = previousEntry.child;
 	if (isToolGroupComponent(previous)) {
 		children.splice(index, 1);
-		previous.addTool(component);
 		previous.addThinking(takeThinkingMs());
 		previous.addThinkingText(harvestThinking(previousEntry.skipped));
+		previous.addTool(component);
 		setComponentParent(component, previous);
 		ACTIVE_TOOL_GROUPS.add(previous);
 		return;
@@ -608,12 +622,11 @@ function maybeGroupToolComponent(parent: unknown, component: unknown): void {
 	if (isGroupableTool(previous)) {
 		const group = new ToolGroupComponent();
 		group.expanded = internals(previous).expanded === true || internals(component).expanded === true;
-		group.addTool(previous);
-		group.addTool(component);
 		group.addThinking(takeThinkingMs());
-		group.addThinkingText(
-			harvestThinking([...collectSeparatorsBefore(children, previousEntry.index - 1), ...previousEntry.skipped]),
-		);
+		group.addThinkingText(harvestThinking(collectSeparatorsBefore(children, previousEntry.index - 1)));
+		group.addTool(previous);
+		group.addThinkingText(harvestThinking(previousEntry.skipped));
+		group.addTool(component);
 		setComponentParent(group, parent);
 		setComponentParent(previous, group);
 		setComponentParent(component, group);
