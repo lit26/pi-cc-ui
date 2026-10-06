@@ -368,6 +368,8 @@ class ToolGroupComponent extends Container {
 	expanded = false;
 	/** Thinking time attributed to this group's tool batch. */
 	thinkingMs = 0;
+	/** Pointer is over the digest line — the label renders in the accent color. */
+	hovered = false;
 	private lastHeight = 0;
 
 	addTool(tool: AnyTool): void {
@@ -376,6 +378,11 @@ class ToolGroupComponent extends Container {
 
 	addThinking(ms: number): void {
 		if (ms > 0) this.thinkingMs += ms;
+	}
+
+	/** Row index of the digest line: 0 is the blank separator row. */
+	private labelRow(): number {
+		return 1;
 	}
 
 	releaseTools(): AnyTool[] {
@@ -388,6 +395,12 @@ class ToolGroupComponent extends Container {
 		if (this.expanded === expanded && this.tools.every((tool) => internals(tool).expanded === expanded)) return;
 		this.expanded = expanded;
 		for (const tool of this.tools) internals(tool).setExpanded?.(expanded);
+	}
+
+	setHovered(hovered: boolean): void {
+		if (this.hovered === hovered) return;
+		this.hovered = hovered;
+		this.requestRender();
 	}
 
 	invalidate(): void {
@@ -406,6 +419,14 @@ class ToolGroupComponent extends Container {
 	}
 
 	handleMouse(event: TuiMouseEvent): ReturnType<Container["handleMouse"]> {
+		if (event.type === "move") {
+			if (event.y !== this.labelRow()) return undefined;
+			this.setHovered(true);
+			return {
+				handled: true,
+				target: { component: this, originX: 0, originY: 0, width: event.width, height: this.lastHeight },
+			};
+		}
 		if (event.type !== "click" || event.button !== "left") return undefined;
 		if (event.y < 0 || event.y >= this.lastHeight) return undefined;
 		const expanded = !this.tools.every((tool) => internals(tool).expanded === true);
@@ -430,7 +451,8 @@ class ToolGroupComponent extends Container {
 
 		// Blank separator row, then the CC digest. Deliberately no status dot:
 		// a group is not one tool and the digest already carries the tense.
-		const lines: string[] = ["", clampLine(`  ${theme.fg("muted", groupSummary(this.tools, this.thinkingMs, status))}`, safeWidth)];
+		const summary = groupSummary(this.tools, this.thinkingMs, status);
+		const lines: string[] = ["", clampLine(`  ${theme.fg(this.hovered ? "accent" : "muted", summary)}`, safeWidth)];
 		if (this.expanded) {
 			const childWidth = Math.max(1, safeWidth - 4);
 			for (let index = 0; index < this.tools.length; index++) {
@@ -602,6 +624,7 @@ function patchContainerGrouping(): void {
 	const originalAddChild = proto.addChild;
 	const originalRemoveChild = proto.removeChild;
 	const originalClear = proto.clear;
+	const originalHandleMouse = proto.handleMouse;
 	proto.addChild = function patchedAddChild(this: object, component: unknown) {
 		const result = originalAddChild.call(this, component);
 		setComponentParent(component, this);
@@ -625,7 +648,44 @@ function patchContainerGrouping(): void {
 		}
 		return originalClear.call(this);
 	};
+	// Hover exit has no event: pi only dispatches to whatever sits under the
+	// pointer, so the group that was hovered never hears about the pointer
+	// leaving. Wrap the outermost mouse dispatch and read the resolved target
+	// out of its result — if it is not inside a group, every group unhovers.
+	proto.handleMouse = function patchedHandleMouse(this: object, event: { type?: string }) {
+		if (event?.type !== "move" || mouseDispatchDepth > 0 || typeof originalHandleMouse !== "function") {
+			return originalHandleMouse.call(this, event);
+		}
+		mouseDispatchDepth += 1;
+		try {
+			const result = originalHandleMouse.call(this, event);
+			applyHoverFromTarget((result as { target?: { component?: unknown } } | undefined)?.target?.component);
+			return result;
+		} finally {
+			mouseDispatchDepth -= 1;
+		}
+	};
 	proto[GROUPING_PATCH] = true;
+}
+
+let mouseDispatchDepth = 0;
+
+/** Walk up from the leaf the mouse dispatch resolved to and hover its group,
+ *  clearing every other group. */
+function applyHoverFromTarget(target: unknown): void {
+	let current = target;
+	let hovered: ToolGroupComponent | undefined;
+	let guard = 0;
+	while (current && typeof current === "object" && guard++ < 64) {
+		if (current instanceof ToolGroupComponent) {
+			hovered = current;
+			break;
+		}
+		current = (current as Record<symbol, unknown>)[COMPONENT_PARENT];
+	}
+	for (const group of ACTIVE_TOOL_GROUPS) {
+		if (group !== hovered) group.setHovered(false);
+	}
 }
 
 export function installToolGroups(pi: ExtensionAPI): void {
