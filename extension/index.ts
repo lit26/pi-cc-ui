@@ -20,7 +20,7 @@ import { registerSpinner } from "./spinner.js";
 import { registerTurnFooter } from "./turn-footer.js";
 import { registerBanner } from "./banner.js";
 import { registerStatusLine } from "./status-line.js";
-import { registerGrouping } from "./tools/grouping.js";
+import { installToolGroups } from "./tools/grouping.js";
 import { registerBuiltins } from "./tools/builtins.js";
 import { registerCommands } from "./commands.js";
 import { registerThinking } from "./thinking.js";
@@ -38,7 +38,7 @@ export default function (pi: ExtensionAPI) {
 	registerPromptPointer(pi);
 
 	// Layer 3: tool rendering
-	registerGrouping(pi);
+	installToolGroups(pi);
 	registerBuiltins(pi);
 
 	// Layer 4: thinking (transformer + hidden label + spinner-row coordination)

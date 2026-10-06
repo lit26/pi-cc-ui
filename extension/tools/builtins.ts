@@ -58,16 +58,7 @@ import {
 	type DiffLine,
 	type ParsedDiff,
 } from "./diff.js";
-import {
-	getGroupRenderInfo,
-	isHiddenGroupMember,
-	makeText,
-	registerGroupInvalidator,
-	renderCollapsedSummary,
-	renderGroupPreview,
-	currentBlinkPhase,
-	armBlink,
-} from "./grouping.js";
+import { armBlink, currentBlinkPhase, makeText, setGroupTheme } from "./grouping.js";
 import { resolvePalette, italic, type ResolvedPalette } from "../palette.js";
 
 // CC figures.ts: BLACK_CIRCLE = env.platform === 'darwin' ? '⏺' : '●'.
@@ -107,11 +98,6 @@ const EXTRA_DETAIL_LINES = 12000;
 // Completed results flip to head-first (renderTruncatedContent); only the live
 // view tails, because tailing is the point while output is still arriving.
 const STREAM_PREVIEW_ROWS = 5;
-
-// The expanded-group glance body is composed into one string by the leader, so
-// no render width reaches it. 80 columns is the conventional fallback and only
-// affects where a long row is chunked, not the row budget itself.
-const GROUP_PREVIEW_NOMINAL_WIDTH = 80;
 
 let extraDetail = false;
 export function setExtraDetail(v: boolean): void {
@@ -699,7 +685,7 @@ function liveLineCountTrailing(ctx: RenderContext, theme: Theme): string {
 }
 
 // ---------------------------------------------------------------------------
-// Group-aware render slots
+// Tool render context
 // ---------------------------------------------------------------------------
 
 type RenderContext = {
@@ -715,10 +701,6 @@ type RenderContext = {
 	isError: boolean;
 	args: unknown;
 };
-
-function displayPathFor(ctx: RenderContext): (p: string) => string {
-	return (p: string) => shortPath(ctx.cwd, p);
-}
 
 /**
  * The ctrl+o-expanded body shared by read/grep/find/ls: a stat line plus the
@@ -743,61 +725,6 @@ function expandedStatBody(
 		});
 		return body === "" ? stat : `${stat}\n${body}`;
 	});
-}
-
-/** The per-member result line for an expanded group's glance preview. */
-function groupMemberPreview(m: { status: string; result: unknown }, theme: Theme): string {
-	if (m.status === "pending") return theme.fg("dim", "…");
-	const out = resultText(m.result);
-	if (!out) return "";
-	// Head-first, same direction as the standalone completed result (CC routes
-	// both through OutputLine → renderTruncatedContent). The group body is a
-	// nested list, so the ctrl+o hint is suppressed — CC CtrlOToExpand.tsx:34
-	// returns null inside a sub-agent / virtual list.
-	//
-	// This path renders to a plain string (the group leader composes one block),
-	// so the render width is unavailable. Budget against a nominal width, which
-	// bounds a minified line to a few wrapped rows instead of hundreds.
-	const collected = collectNonEmptyLines(out, previewLimit());
-	return renderTruncatedContent(
-		collected.lines.join("\n"),
-		GROUP_PREVIEW_NOMINAL_WIDTH,
-		previewLimit(),
-		theme,
-		(l) => theme.fg("dim", l),
-		{ expandHint: false },
-	);
-}
-
-function renderGroupCall(toolCallId: string, theme: Theme, ctx: RenderContext): string | undefined {
-	// Capture this tool's invalidate on EVERY render, before the group-existence
-	// checks (AUDIT §5:493). A tool that currently renders standalone may become a
-	// group leader when a later member joins; invalidateGroups() then needs its
-	// invalidate to promote it. Recording only inside the "is a leader" branch
-	// missed exactly this case — the leader had already settled standalone.
-	registerGroupInvalidator(toolCallId, ctx.invalidate);
-	if (isHiddenGroupMember(toolCallId)) return "";
-	const info = getGroupRenderInfo(toolCallId, ctx.expanded);
-	if (!info) return undefined;
-	const palette = getPalette(theme);
-	if (info.phase === "collapsed") {
-		return renderCollapsedSummary(info, theme, palette, displayPathFor(ctx));
-	}
-	// Expanded (preview) phase: the leader's renderCall draws the WHOLE group —
-	// glance lines plus each member's result preview. renderResult returns "" so
-	// the group is not drawn a second time (pi runs renderCall AND renderResult
-	// unconditionally, tool-execution.js:228-263; the old `() => ""` here plus a
-	// real callback in renderResult drew every glance line twice — AUDIT §5:368).
-	return renderGroupPreview(info, theme, palette, displayPathFor(ctx), (m) => groupMemberPreview(m, theme));
-}
-
-function renderGroupResult(toolCallId: string, theme: Theme, ctx: RenderContext): string | undefined {
-	registerGroupInvalidator(toolCallId, ctx.invalidate);
-	if (isHiddenGroupMember(toolCallId)) return "";
-	if (!getGroupRenderInfo(toolCallId, ctx.expanded)) return undefined;
-	// The whole group (collapsed summary or expanded preview) is rendered by
-	// renderGroupCall; renderResult must add nothing or the group is doubled.
-	return "";
 }
 
 // ---------------------------------------------------------------------------
@@ -831,15 +758,13 @@ export function registerBuiltins(pi: ExtensionAPI): void {
 		},
 		renderCall(args, theme, ctx) {
 			const c = ctx as unknown as RenderContext;
-			const grouped = renderGroupCall(c.toolCallId, theme, c);
-			if (grouped !== undefined) return cachedText(c.lastComponent, grouped);
+			setGroupTheme(theme);
 			const summary = shortPath(c.cwd, String(args?.path ?? ""));
 			return makeText(c.lastComponent, toolHeader("Read", summary, theme, statusDot(c, theme)));
 		},
 		renderResult(result, { expanded, isPartial }, theme, ctx) {
 			const c = ctx as unknown as RenderContext;
-			const grouped = renderGroupResult(c.toolCallId, theme, c);
-			if (grouped !== undefined) return cachedText(c.lastComponent, grouped);
+			setGroupTheme(theme);
 			if (isPartial) return cachedText(c.lastComponent, withResultLead(theme, theme.fg("dim", "Reading…")));
 			// CC FileReadTool/UI.tsx:152-160 — red error text on failure.
 			if (c.isError) {
@@ -894,16 +819,14 @@ export function registerBuiltins(pi: ExtensionAPI): void {
 		},
 		renderCall(args, theme, ctx) {
 			const c = ctx as unknown as RenderContext;
-			const grouped = renderGroupCall(c.toolCallId, theme, c);
-			if (grouped !== undefined) return cachedText(c.lastComponent, grouped);
+			setGroupTheme(theme);
 			const summary = truncateCommand(String(args?.command ?? ""));
 			const header = toolHeader("Bash", summary, theme, statusDot(c, theme));
 			return makeText(c.lastComponent, header + liveLineCountTrailing(c, theme));
 		},
 		renderResult(result, { expanded, isPartial }, theme, ctx) {
 			const c = ctx as unknown as RenderContext;
-			const grouped = renderGroupResult(c.toolCallId, theme, c);
-			if (grouped !== undefined) return cachedText(c.lastComponent, grouped);
+			setGroupTheme(theme);
 			const output = resultText(result);
 
 			// Live preview while streaming: CC ShellProgressMessage.tsx:44,83 keeps a
@@ -1003,8 +926,7 @@ export function registerBuiltins(pi: ExtensionAPI): void {
 		},
 		renderCall(args, theme, ctx) {
 			const c = ctx as unknown as RenderContext;
-			const grouped = renderGroupCall(c.toolCallId, theme, c);
-			if (grouped !== undefined) return cachedText(c.lastComponent, grouped);
+			setGroupTheme(theme);
 			// CC GrepTool/UI.tsx:135-138 — `pattern: "foo", path: "src"`, pattern untruncated.
 			let summary = `pattern: "${String(args?.pattern ?? "")}"`;
 			if (args?.path) summary += `, path: "${args.path}"`;
@@ -1012,8 +934,7 @@ export function registerBuiltins(pi: ExtensionAPI): void {
 		},
 		renderResult(result, { expanded, isPartial }, theme, ctx) {
 			const c = ctx as unknown as RenderContext;
-			const grouped = renderGroupResult(c.toolCallId, theme, c);
-			if (grouped !== undefined) return cachedText(c.lastComponent, grouped);
+			setGroupTheme(theme);
 			if (isPartial) return cachedText(c.lastComponent, withResultLead(theme, theme.fg("dim", "Searching…")));
 			if (c.isError) {
 				return cachedText(c.lastComponent, withResultLead(theme, theme.fg("error", resultText(result) || "Error searching files")));
@@ -1049,16 +970,14 @@ export function registerBuiltins(pi: ExtensionAPI): void {
 		},
 		renderCall(args, theme, ctx) {
 			const c = ctx as unknown as RenderContext;
-			const grouped = renderGroupCall(c.toolCallId, theme, c);
-			if (grouped !== undefined) return cachedText(c.lastComponent, grouped);
+			setGroupTheme(theme);
 			let summary = `"${summarizeText(String(args?.pattern ?? ""), 40)}"`;
 			if (args?.path) summary += ` in ${args.path}`;
 			return makeText(c.lastComponent, toolHeader("Find", summary, theme, statusDot(c, theme)));
 		},
 		renderResult(result, { expanded, isPartial }, theme, ctx) {
 			const c = ctx as unknown as RenderContext;
-			const grouped = renderGroupResult(c.toolCallId, theme, c);
-			if (grouped !== undefined) return cachedText(c.lastComponent, grouped);
+			setGroupTheme(theme);
 			if (isPartial) return cachedText(c.lastComponent, withResultLead(theme, theme.fg("dim", "Finding…")));
 			if (c.isError) {
 				return cachedText(c.lastComponent, withResultLead(theme, theme.fg("error", resultText(result) || "Error finding files")));
@@ -1091,15 +1010,13 @@ export function registerBuiltins(pi: ExtensionAPI): void {
 		},
 		renderCall(args, theme, ctx) {
 			const c = ctx as unknown as RenderContext;
-			const grouped = renderGroupCall(c.toolCallId, theme, c);
-			if (grouped !== undefined) return cachedText(c.lastComponent, grouped);
+			setGroupTheme(theme);
 			const summary = shortPath(c.cwd, String(args?.path ?? "."));
 			return makeText(c.lastComponent, toolHeader("List", summary, theme, statusDot(c, theme)));
 		},
 		renderResult(result, { expanded, isPartial }, theme, ctx) {
 			const c = ctx as unknown as RenderContext;
-			const grouped = renderGroupResult(c.toolCallId, theme, c);
-			if (grouped !== undefined) return cachedText(c.lastComponent, grouped);
+			setGroupTheme(theme);
 			if (isPartial) return cachedText(c.lastComponent, withResultLead(theme, theme.fg("dim", "Listing…")));
 			if (c.isError) {
 				return cachedText(c.lastComponent, withResultLead(theme, theme.fg("error", resultText(result) || "Error listing directory")));
@@ -1189,8 +1106,7 @@ export function registerBuiltins(pi: ExtensionAPI): void {
 		},
 		renderCall(args, theme, ctx) {
 			const c = ctx as unknown as RenderContext;
-			const grouped = renderGroupCall(c.toolCallId, theme, c);
-			if (grouped !== undefined) return cachedText(c.lastComponent, grouped);
+			setGroupTheme(theme);
 			// AUDIT §6 P1 — CC's transcript header verb is Create for a new file and
 			// Update for an overwrite (not the tool's userFacingName "Write").
 			// Signal source: the execute-time snapshot when we have it; before
