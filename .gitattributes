@@ -1,0 +1,2 @@
+# grouping.ts holds a literal U+0000 sentinel in a string; keep text diffs working.
+extension/tools/grouping.ts diff
