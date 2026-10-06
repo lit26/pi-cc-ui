@@ -302,7 +302,7 @@ export function resolvePalette(
 	// real getPalette(theme) call on a 256color terminal (same name → cache hit →
 	// stale truecolor palette). Mode is session-constant, so real renders still
 	// hit one stable instance — the reference guard in diff.ts:460 keeps holding.
-	const cacheKey = `${themeName ?? ""} ${colorMode}`;
+	const cacheKey = `${themeName ?? ""}\u0000${colorMode}`;
 	const cached = paletteCache.get(cacheKey);
 	if (cached !== undefined) {
 		activeColorMode = cached.colorMode;

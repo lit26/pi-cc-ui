@@ -293,7 +293,7 @@ export class BannerComponent {
 			this.info.model() ?? "",
 			this.info.title() ?? "",
 			this.info.resumed ?? "",
-		].join(" ");
+		].join("\u0000");
 		if (this.cacheLines && this.cacheKey === key && this.cacheTheme === theme) {
 			return this.cacheLines;
 		}
