@@ -30,6 +30,8 @@ import {
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { relative } from "node:path";
+import { formatElapsed } from "../spinner.js";
+import { isThinkingExpanded } from "../thinking.js";
 
 export type ToolStatus = "pending" | "success" | "error";
 
@@ -162,6 +164,59 @@ export function isGroupingEnabled(): boolean {
 /** Drop the settings cache so a `/cc-tools group` toggle applies immediately. */
 export function bustGroupingSettingsCache(): void {
 	settingsCache = null;
+}
+
+// ---------------------------------------------------------------------------
+// Thinking attribution
+//
+// The collapsed summary reuses CC's phrasing ("Thought for 1m 30s, ran 3 shell
+// commands"), so grouped tools need the thinking time that preceded them. The
+// old event-driven tracker did this; it is rebuilt here as a tiny span clock
+// that the container-level grouping drains per group.
+// ---------------------------------------------------------------------------
+
+let pendingThinkingMs = 0;
+let thinkingOpenSince: number | undefined;
+
+function settleThinking(): void {
+	if (thinkingOpenSince === undefined) return;
+	pendingThinkingMs += Date.now() - thinkingOpenSince;
+	thinkingOpenSince = undefined;
+}
+
+/** Hand the accumulated thinking time to the group being formed. */
+function takeThinkingMs(): number {
+	settleThinking();
+	const ms = pendingThinkingMs;
+	pendingThinkingMs = 0;
+	return ms;
+}
+
+function resetThinking(): void {
+	pendingThinkingMs = 0;
+	thinkingOpenSince = undefined;
+}
+
+/** MessageUpdateEvent shapes differ across pi versions: prefer the explicit
+ *  assistant message event, fall back to watching the last streamed block. */
+function trackThinkingEvent(event: { assistantMessageEvent?: { type?: string }; message?: { content?: unknown } }): void {
+	const type = event.assistantMessageEvent?.type;
+	if (type === "thinking_start") {
+		if (thinkingOpenSince === undefined) thinkingOpenSince = Date.now();
+		return;
+	}
+	if (type === "thinking_end") {
+		settleThinking();
+		return;
+	}
+	const content = event.message?.content;
+	if (!Array.isArray(content) || content.length === 0) return;
+	const last = content[content.length - 1] as { type?: string } | undefined;
+	if (last?.type === "thinking") {
+		if (thinkingOpenSince === undefined) thinkingOpenSince = Date.now();
+	} else {
+		settleThinking();
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -389,10 +444,16 @@ function groupTheme(): Theme {
 class ToolGroupComponent extends Container {
 	private tools: AnyTool[] = [];
 	expanded = false;
+	/** Thinking time attributed to this group's tool batch. */
+	thinkingMs = 0;
 	private lastHeight = 0;
 
 	addTool(tool: AnyTool): void {
 		this.tools.push(tool);
+	}
+
+	addThinking(ms: number): void {
+		if (ms > 0) this.thinkingMs += ms;
 	}
 
 	releaseTools(): AnyTool[] {
@@ -452,7 +513,17 @@ class ToolGroupComponent extends Container {
 		const subject = sameName && !this.expanded ? repeatedSubject(this.tools, firstName) : "";
 		const lines: string[] = [];
 
-		if (subject && this.tools.length > 1) {
+		const bashOnly = this.tools.every((tool) => toolName(tool) === "bash");
+		if (!this.expanded && bashOnly) {
+			// CC's shell-batch summary: "Thought for 1m 30s, ran 3 shell commands".
+			const count = this.tools.length;
+			const noun = count === 1 ? "shell command" : "shell commands";
+			const summary =
+				this.thinkingMs >= 1_000
+					? `${theme.fg("muted", "Thought for ")}${theme.bold(formatElapsed(this.thinkingMs))}${theme.fg("muted", `, ran ${count} ${noun}`)}`
+					: `${theme.fg("muted", "Ran ")}${theme.bold(String(count))}${theme.fg("muted", ` ${noun}`)}`;
+			lines.push(clampLine(`${light} ${summary}`, safeWidth));
+		} else if (subject && this.tools.length > 1) {
 			// Every member is the same tool hitting the same target — one row.
 			const counts = countStatuses(this.tools);
 			const attention = counts.pending || counts.error ? ` • ${countsText(this.tools, theme)}` : "";
@@ -522,7 +593,22 @@ function isIgnorableSeparator(value: unknown): boolean {
 	if (!isAssistant) return false;
 	const children = (value as { contentContainer?: { children?: unknown[] } }).contentContainer?.children;
 	if (!Array.isArray(children) || children.length === 0) return true;
-	return children.every((child) => child instanceof Spacer);
+	if (children.every((child) => child instanceof Spacer)) return true;
+	// A thinking-only message renders ZERO rows while thinking is CC-collapsed
+	// (thinking.ts transformer returns ""), so it is not a visual boundary and
+	// grouped tools span iterations. The message's own toolCall blocks are NOT a
+	// boundary: its tool components are added as the message's following
+	// siblings, which is exactly the batch being grouped. Assistant body text and
+	// images stay boundaries; expanded thinking stays a boundary.
+	if (isThinkingExpanded()) return false;
+	const content = (value as { lastMessage?: { content?: unknown } }).lastMessage?.content;
+	if (!Array.isArray(content)) return false;
+	for (const block of content) {
+		const type = (block as { type?: string }).type;
+		if (type === "image") return false;
+		if (type === "text" && String((block as { text?: unknown }).text ?? "").trim() !== "") return false;
+	}
+	return true;
 }
 
 function findPreviousToolSibling(children: unknown[], startIndex: number): { child: unknown; index: number } | undefined {
@@ -546,6 +632,7 @@ function maybeGroupToolComponent(parent: unknown, component: unknown): void {
 	if (isToolGroupComponent(previous)) {
 		children.splice(index, 1);
 		previous.addTool(component);
+		previous.addThinking(takeThinkingMs());
 		setComponentParent(component, previous);
 		ACTIVE_TOOL_GROUPS.add(previous);
 		return;
@@ -555,6 +642,7 @@ function maybeGroupToolComponent(parent: unknown, component: unknown): void {
 		group.expanded = internals(previous).expanded === true || internals(component).expanded === true;
 		group.addTool(previous);
 		group.addTool(component);
+		group.addThinking(takeThinkingMs());
 		setComponentParent(group, parent);
 		setComponentParent(previous, group);
 		setComponentParent(component, group);
@@ -656,9 +744,15 @@ function patchContainerGrouping(): void {
 
 export function installToolGroups(pi: ExtensionAPI): void {
 	patchContainerGrouping();
+	pi.on("session_start", async () => resetThinking());
+	pi.on("message_update", async (event) => trackThinkingEvent(event as never));
+	pi.on("message_end", async (event) => {
+		if (event.message?.role === "assistant") settleThinking();
+	});
 	pi.on("session_shutdown", async () => {
 		ungroupAllToolGroups();
 		blinkers.clear();
+		resetThinking();
 		stopBlink();
 	});
 }
