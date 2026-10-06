@@ -197,56 +197,6 @@ function resetThinking(): void {
 	thinkingOpenSince = undefined;
 }
 
-// ---------------------------------------------------------------------------
-// Thinking durations across reload / resume
-//
-// The span clock above only sees the live stream, so a resumed transcript has no
-// thinking time to report. Each measured increment is written to the session as
-// a custom entry keyed by the tool call it belongs to, and read back on
-// session_start. Entries are additive and are only ever appended for a positive
-// live measurement, so resuming cannot grow the session.
-// ---------------------------------------------------------------------------
-
-const THINKING_ENTRY_TYPE = "cc-ui-group-thinking";
-
-interface GroupThinkingEntry {
-	toolCallId: string;
-	ms: number;
-}
-
-let appendEntry: ((customType: string, data?: unknown) => void) | undefined;
-let persistedThinking = new Map<string, number>();
-
-function loadPersistedThinking(entries: unknown): void {
-	const map = new Map<string, number>();
-	if (Array.isArray(entries)) {
-		for (const entry of entries) {
-			const candidate = entry as { type?: string; customType?: string; data?: GroupThinkingEntry };
-			if (candidate?.type !== "custom" || candidate.customType !== THINKING_ENTRY_TYPE) continue;
-			const data = candidate.data;
-			if (data && typeof data.toolCallId === "string" && typeof data.ms === "number") {
-				map.set(data.toolCallId, data.ms);
-			}
-		}
-	}
-	persistedThinking = map;
-}
-
-function recordThinking(toolCallId: string | undefined, ms: number): void {
-	if (!toolCallId || ms <= 0) return;
-	try {
-		appendEntry?.(THINKING_ENTRY_TYPE, { toolCallId, ms } satisfies GroupThinkingEntry);
-	} catch {
-		/* session may be read-only (e.g. a forked transcript) */
-	}
-}
-
-/** Thinking time measured live, else the value persisted for this tool call. */
-function thinkingFor(tool: AnyTool): number {
-	const id = internals(tool).toolCallId;
-	return id ? persistedThinking.get(id) ?? 0 : 0;
-}
-
 /** MessageUpdateEvent shapes differ across pi versions: prefer the explicit
  *  assistant message event, fall back to watching the last streamed block. */
 function trackThinkingEvent(event: { assistantMessageEvent?: { type?: string }; message?: { content?: unknown } }): void {
@@ -375,12 +325,19 @@ function amount(count: number, one: string, many: string): string {
  * order matches CC (thinking, search, read, list, MCP, other, bash) and stays in
  * the present tense while any member is still running.
  */
-function groupSummary(tools: AnyTool[], thinkingMs: number, status: ToolStatus): string {
+function groupSummary(tools: AnyTool[], thinkingMs: number, status: ToolStatus, hasThinkingText: boolean): string {
 	const active = status === "pending";
 	const counts = { search: 0, read: 0, list: 0, bash: 0, mcp: 0, other: 0 };
 	for (const tool of tools) counts[kindOf(toolName(tool))]++;
 	const parts: string[] = [];
-	if (thinkingMs >= 1_000) parts.push(`${active ? "thinking for" : "thought for"} ${formatElapsed(thinkingMs)}`);
+	if (thinkingMs >= 1_000) {
+		parts.push(`${active ? "thinking for" : "thought for"} ${formatElapsed(thinkingMs)}`);
+	} else if (hasThinkingText) {
+		// Resumed transcripts carry the thinking text but no measured duration
+		// (pi does not persist one), so report that thinking happened instead of
+		// dropping the fragment entirely.
+		parts.push(active ? "thinking" : "thought for a while");
+	}
 	if (counts.search) parts.push(`${active ? "searching for" : "searched for"} ${amount(counts.search, "pattern", "patterns")}`);
 	if (counts.read) parts.push(`${active ? "reading" : "read"} ${amount(counts.read, "file", "files")}`);
 	if (counts.list) parts.push(`${active ? "listing" : "listed"} ${amount(counts.list, "directory", "directories")}`);
@@ -508,7 +465,7 @@ class ToolGroupComponent extends Container {
 
 		// Blank separator row, then the CC digest. Deliberately no status dot:
 		// a group is not one tool and the digest already carries the tense.
-		const summary = groupSummary(this.tools, this.thinkingMs, status);
+		const summary = groupSummary(this.tools, this.thinkingMs, status, this.thinkingText.length > 0);
 		const lines: string[] = ["", clampLine(`  ${theme.fg(this.hovered ? "accent" : "muted", summary)}`, safeWidth)];
 		if (this.expanded) {
 			// Ctrl+O reveals the thinking that produced the batch. The collapsed
@@ -630,16 +587,6 @@ function findPreviousToolSibling(
 	return undefined;
 }
 
-/** Live thinking for the batch that just arrived, persisted for resume. */
-function consumeThinking(component: AnyTool): number {
-	const live = takeThinkingMs();
-	if (live > 0) {
-		recordThinking(internals(component).toolCallId, live);
-		return live;
-	}
-	return thinkingFor(component);
-}
-
 function maybeGroupToolComponent(parent: unknown, component: unknown): void {
 	if (!isGroupingEnabled() || !isGroupableTool(component) || isToolGroupComponent(parent)) return;
 	const children = (parent as { children?: unknown[] } | undefined)?.children;
@@ -652,7 +599,7 @@ function maybeGroupToolComponent(parent: unknown, component: unknown): void {
 	if (isToolGroupComponent(previous)) {
 		children.splice(index, 1);
 		previous.addTool(component);
-		previous.addThinking(consumeThinking(component));
+		previous.addThinking(takeThinkingMs());
 		previous.addThinkingText(harvestThinking(previousEntry.skipped));
 		setComponentParent(component, previous);
 		ACTIVE_TOOL_GROUPS.add(previous);
@@ -663,7 +610,7 @@ function maybeGroupToolComponent(parent: unknown, component: unknown): void {
 		group.expanded = internals(previous).expanded === true || internals(component).expanded === true;
 		group.addTool(previous);
 		group.addTool(component);
-		group.addThinking(consumeThinking(component));
+		group.addThinking(takeThinkingMs());
 		group.addThinkingText(
 			harvestThinking([...collectSeparatorsBefore(children, previousEntry.index - 1), ...previousEntry.skipped]),
 		);
@@ -806,15 +753,7 @@ function applyHoverFromTarget(target: unknown): void {
 
 export function installToolGroups(pi: ExtensionAPI): void {
 	patchContainerGrouping();
-	appendEntry = (customType, data) => pi.appendEntry(customType, data);
-	pi.on("session_start", async (_event, ctx) => {
-		resetThinking();
-		try {
-			loadPersistedThinking(ctx.sessionManager?.getBranch?.() ?? ctx.sessionManager?.getEntries?.());
-		} catch {
-			persistedThinking = new Map();
-		}
-	});
+	pi.on("session_start", async () => resetThinking());
 	pi.on("message_update", async (event) => trackThinkingEvent(event as never));
 	pi.on("message_end", async (event) => {
 		if (event.message?.role === "assistant") settleThinking();
@@ -823,7 +762,6 @@ export function installToolGroups(pi: ExtensionAPI): void {
 		ungroupAllToolGroups();
 		blinkers.clear();
 		resetThinking();
-		persistedThinking = new Map();
 		stopBlink();
 	});
 }
