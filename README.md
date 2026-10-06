@@ -51,7 +51,7 @@ that project use the condensed logo.
 - **Status line** — model, cwd (with `~` shortening), git branch
 - **Spinner** — CC's verb rotation with byline: elapsed time, token count, `esc to interrupt`
 - **Turn footer** — per-request cost/duration summary, matching CC v2.1.234 behavior
-- **Tool rendering** — CC-style tool rows (no background box), grouped consecutive calls with `⎿` continuation lines, CC-faithful diff rendering with syntax highlighting (shiki)
+- **Tool rendering** — CC-style tool rows (no background box), grouped consecutive tool calls collapsing into CC's one-line digest (`Read a file, ran 6 shell commands`, with `Thought for Xs` folded in when it is worth reporting), preceded by a blank separator row and carrying no status dot; `Ctrl+O` expands the members as `├`/`└` branch rows. CC-faithful diff rendering with syntax highlighting (shiki)
 - **Thinking** — collapsed by default with CC's label treatment; `alt+t` to expand
 - **Prompt editor** — CC's `❯` prompt pointer
 
@@ -78,7 +78,7 @@ extension/
   tools/
     builtins.ts     CC-style rendering for built-in tools
     diff.ts         CC-faithful diff rendering (shiki highlighting)
-    grouping.ts     grouped consecutive tool calls (⎿ continuation)
+    grouping.ts     grouped consecutive tool calls (single row / branch rows)
     collapse.ts     collapsed tool output state
 theme/              six CC theme JSON files
 ```

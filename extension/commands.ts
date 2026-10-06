@@ -119,10 +119,9 @@ export function registerCommands(pi: ExtensionAPI): void {
 		writeSettingsKey(SETTINGS_KEY_GROUP, v);
 		// grouping.ts caches the setting for 2s; bust it so the toggle is instant.
 		bustGroupingSettingsCache();
-		// AUDIT §5:372 / commands.ts:88 — the toggle used to change only future
-		// renders: hidden member rows stayed blank and leaders kept stale
-		// summaries. Push every grouped row (current turn + archived turns) to
-		// re-render under the new setting.
+		// Re-apply the setting to rows already on screen: turning grouping on
+		// re-scans every container we have seen and groups consecutive tool
+		// siblings; turning it off splices each live group back into its members.
 		repaintGroupedRows();
 	};
 
