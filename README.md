@@ -51,7 +51,7 @@ that project use the condensed logo.
 - **Status line** — model, cwd (with `~` shortening), git branch
 - **Spinner** — CC's verb rotation with byline: elapsed time, token count, `esc to interrupt`
 - **Turn footer** — per-request cost/duration summary, matching CC v2.1.234 behavior
-- **Tool rendering** — CC-style tool rows (no background box), grouped consecutive tool calls (one row when every call is the same tool on the same target, `Thought for Xs, ran N shell commands` for a shell-only batch, otherwise a header plus `├`/`└` branch rows), CC-faithful diff rendering with syntax highlighting (shiki)
+- **Tool rendering** — CC-style tool rows (no background box), grouped consecutive tool calls collapsing into CC's one-line digest (`Read a file, ran 6 shell commands`, with `Thought for Xs` folded in when it is worth reporting), preceded by a blank separator row and carrying no status dot; `Ctrl+O` expands the members as `├`/`└` branch rows. CC-faithful diff rendering with syntax highlighting (shiki)
 - **Thinking** — collapsed by default with CC's label treatment; `alt+t` to expand
 - **Prompt editor** — CC's `❯` prompt pointer
 

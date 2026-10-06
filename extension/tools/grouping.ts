@@ -29,7 +29,6 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { relative } from "node:path";
 import { formatElapsed } from "../spinner.js";
 import { isThinkingExpanded } from "../thinking.js";
 
@@ -277,29 +276,6 @@ function toolName(tool: unknown): string {
 	const name = (tool as { toolName?: unknown } | undefined)?.toolName;
 	return typeof name === "string" && name ? name : "tool";
 }
-function humanizeToolName(name: string): string {
-	if (name === "mcp" || name.startsWith("mcp__")) return "MCP";
-	const spaced = name
-		.replace(/([a-z0-9])([A-Z])/g, "$1 $2")
-		.replace(/[_-]+/g, " ")
-		.trim();
-	return spaced.replace(/\b\w/g, (char) => char.toUpperCase());
-}
-
-function shortPath(cwd: string, filePath: unknown): string {
-	if (typeof filePath !== "string" || !filePath) return "";
-	const rel = relative(cwd, filePath);
-	if (!rel.startsWith("..") && !rel.startsWith("/")) return rel || ".";
-	const home = homedir();
-	return home && filePath.startsWith(home) ? filePath.replace(home, "~") : filePath;
-}
-
-function summarizeText(value: unknown, max: number): string {
-	if (typeof value !== "string") return "";
-	const oneLine = value.replace(/\s+/g, " ").trim();
-	return oneLine.length <= max ? oneLine : `${oneLine.slice(0, Math.max(0, max - 1))}…`;
-}
-
 function toolStatus(tool: AnyTool): ToolStatus {
 	const view = internals(tool);
 	if (view.result?.isError) return "error";
@@ -320,102 +296,48 @@ function overallStatus(tools: AnyTool[]): ToolStatus {
 	return "success";
 }
 
-function countsText(tools: AnyTool[], theme: Theme): string {
-	const counts = countStatuses(tools);
-	const parts: string[] = [];
-	if (counts.pending) parts.push(theme.fg("muted", `${counts.pending} running`));
-	if (counts.success) parts.push(theme.fg("success", `${counts.success} done`));
-	if (counts.error) parts.push(theme.fg("error", `${counts.error} failed`));
-	return parts.join(theme.fg("muted", " • "));
-}
-
-/** The group light: a filled dot, blinking while any member is pending. */
+/** The member light for an expanded branch row (the summary line has no dot). */
 function groupLight(status: ToolStatus, theme: Theme): string {
 	if (status === "error") return theme.fg("error", "●");
 	if (status === "pending") return blinkPhase ? theme.fg("dim", "●") : " ";
 	return theme.fg("success", "●");
 }
 
-/** The argument subject that decides "same target" (upstream getToolArgSummary). */
-function toolSubject(tool: AnyTool): string {
-	const view = internals(tool);
-	const args = ((view.args ?? {}) as Record<string, unknown>) ?? {};
-	const cwd = view.cwd ?? process.cwd();
-	switch (toolName(tool)) {
-		case "read": {
-			let value = shortPath(cwd, args.path ?? args.file_path);
-			const parts: string[] = [];
-			if (args.offset) parts.push(`offset=${String(args.offset)}`);
-			if (args.limit) parts.push(`limit=${String(args.limit)}`);
-			if (parts.length > 0) value += ` (${parts.join(", ")})`;
-			return value;
-		}
-		case "bash":
-			return summarizeText(args.command, 72);
-		case "grep":
-		case "find": {
-			const pattern = typeof args.pattern === "string" ? `"${summarizeText(args.pattern, 40)}"` : "";
-			const path = shortPath(cwd, args.path);
-			return path ? `${pattern} in ${path}` : pattern;
-		}
-		case "ls":
-			return shortPath(cwd, args.path ?? ".");
-		default: {
-			for (const key of ["path", "file_path", "url", "query", "name", "subject", "tool", "description", "prompt"]) {
-				const value = args[key];
-				if (typeof value === "string" && value) return summarizeText(value, 72);
-			}
-			return "";
-		}
-	}
+/** CC digest bucket for a tool name. */
+function kindOf(name: string): "search" | "read" | "list" | "bash" | "mcp" | "other" {
+	if (name === "read") return "read";
+	if (name === "grep" || name === "find") return "search";
+	if (name === "ls") return "list";
+	if (name === "bash") return "bash";
+	if (name === "mcp" || name.startsWith("mcp__")) return "mcp";
+	return "other";
 }
 
-/** Non-empty only when every member has the same name AND the same subject. */
-function repeatedSubject(tools: AnyTool[], name: string | undefined): string {
-	if (!name || tools.length === 0) return "";
-	const subjects = tools.map(toolSubject);
-	return subjects[0] && subjects.every((subject) => subject === subjects[0]) ? subjects[0]! : "";
+/** "a file" for one, "3 files" beyond. */
+function amount(count: number, one: string, many: string): string {
+	return count === 1 ? `a ${one}` : `${count} ${many}`;
 }
 
-// ---------------------------------------------------------------------------
-// Group row rendering
-// ---------------------------------------------------------------------------
-
-interface GroupEntry {
-	tools: AnyTool[];
-	name: string;
-	subject: string;
-}
-
-/** Merge consecutive members that name the same target into one row. */
-function collapseEntries(tools: AnyTool[]): GroupEntry[] {
-	const entries: GroupEntry[] = [];
-	for (const tool of tools) {
-		const name = toolName(tool);
-		const subject = toolSubject(tool);
-		const previous = entries[entries.length - 1];
-		if (subject && previous?.name === name && previous.subject === subject) {
-			previous.tools.push(tool);
-		} else {
-			entries.push({ tools: [tool], name, subject });
-		}
-	}
-	return entries;
-}
-
-/** First rendered row of a tool with the status marker removed, so the group
- *  can prefix its own light. */
-function compactToolLine(tool: AnyTool, width: number): string {
-	const first = stripToolChrome(tool.render(width))[0];
-	if (!first) return clampLine(toolName(tool), width);
-	return clampLine(removeLeadingStatus(first), width);
-}
-
-function entryLine(entry: GroupEntry, width: number): string {
-	if (entry.tools.length === 1) return compactToolLine(entry.tools[0]!, width);
-	const suffix = ` ×${entry.tools.length}`;
-	const body = compactToolLine(entry.tools[0]!, Math.max(1, width - visibleWidth(suffix)));
-	return clampLine(`${body}${suffix}`, width);
+/**
+ * CC's collapsed-group digest, e.g. "Read a file, ran 6 shell commands", with
+ * the thinking duration folded in first when it is worth reporting. Fragment
+ * order matches CC (thinking, search, read, list, MCP, other, bash) and stays in
+ * the present tense while any member is still running.
+ */
+function groupSummary(tools: AnyTool[], thinkingMs: number, status: ToolStatus): string {
+	const active = status === "pending";
+	const counts = { search: 0, read: 0, list: 0, bash: 0, mcp: 0, other: 0 };
+	for (const tool of tools) counts[kindOf(toolName(tool))]++;
+	const parts: string[] = [];
+	if (thinkingMs >= 1_000) parts.push(`${active ? "thinking for" : "thought for"} ${formatElapsed(thinkingMs)}`);
+	if (counts.search) parts.push(`${active ? "searching for" : "searched for"} ${amount(counts.search, "pattern", "patterns")}`);
+	if (counts.read) parts.push(`${active ? "reading" : "read"} ${amount(counts.read, "file", "files")}`);
+	if (counts.list) parts.push(`${active ? "listing" : "listed"} ${amount(counts.list, "directory", "directories")}`);
+	if (counts.mcp) parts.push(`${active ? "querying" : "queried"} ${amount(counts.mcp, "MCP tool", "MCP tools")}`);
+	if (counts.other) parts.push(`${active ? "calling" : "called"} ${amount(counts.other, "tool", "tools")}`);
+	if (counts.bash) parts.push(`${active ? "running" : "ran"} ${amount(counts.bash, "shell command", "shell commands")}`);
+	const text = parts.join(", ");
+	return text ? text.charAt(0).toUpperCase() + text.slice(1) : "";
 }
 
 /** Full expanded rows for one member, status marker stripped from the first. */
@@ -504,56 +426,20 @@ class ToolGroupComponent extends Container {
 		const theme = groupTheme();
 		const safeWidth = Math.max(1, Math.floor(width));
 		const status = overallStatus(this.tools);
-		const light = groupLight(status, theme);
 		if (status === "pending") armBlink(`group:${internals(this.tools[0]!).toolCallId ?? "?"}`, () => this.requestRender());
 
-		const firstName = toolName(this.tools[0]!);
-		const sameName = this.tools.every((tool) => toolName(tool) === firstName);
-		const label = sameName ? humanizeToolName(firstName) : "Multiple Tools";
-		const subject = sameName && !this.expanded ? repeatedSubject(this.tools, firstName) : "";
-		const lines: string[] = [];
-
-		const bashOnly = this.tools.every((tool) => toolName(tool) === "bash");
-		if (!this.expanded && bashOnly) {
-			// CC's shell-batch summary: "Thought for 1m 30s, ran 3 shell commands".
-			const count = this.tools.length;
-			const noun = count === 1 ? "shell command" : "shell commands";
-			const summary =
-				this.thinkingMs >= 1_000
-					? `${theme.fg("muted", "Thought for ")}${theme.bold(formatElapsed(this.thinkingMs))}${theme.fg("muted", `, ran ${count} ${noun}`)}`
-					: `${theme.fg("muted", "Ran ")}${theme.bold(String(count))}${theme.fg("muted", ` ${noun}`)}`;
-			lines.push(clampLine(`${light} ${summary}`, safeWidth));
-		} else if (subject && this.tools.length > 1) {
-			// Every member is the same tool hitting the same target — one row.
-			const counts = countStatuses(this.tools);
-			const attention = counts.pending || counts.error ? ` • ${countsText(this.tools, theme)}` : "";
-			const suffix = `${theme.fg("muted", ` ×${this.tools.length}`)}${attention}`;
-			const body = compactToolLine(this.tools[0]!, Math.max(1, safeWidth - visibleWidth(suffix) - 2));
-			lines.push(clampLine(`${light} ${body}${suffix}`, safeWidth));
-		} else {
-			lines.push(clampLine(` ${light} ${theme.bold(`${label}:`)} ${countsText(this.tools, theme)}`, safeWidth));
+		// Blank separator row, then the CC digest. Deliberately no status dot:
+		// a group is not one tool and the digest already carries the tense.
+		const lines: string[] = ["", clampLine(`  ${theme.fg("muted", groupSummary(this.tools, this.thinkingMs, status))}`, safeWidth)];
+		if (this.expanded) {
 			const childWidth = Math.max(1, safeWidth - 4);
-			if (this.expanded) {
-				for (let index = 0; index < this.tools.length; index++) {
-					const tool = this.tools[index]!;
-					lines.push(...branchLine(expandedToolLines(tool, childWidth), index, this.tools.length, safeWidth, groupLight(toolStatus(tool), theme), theme));
-				}
-			} else {
-				const entries = collapseEntries(this.tools);
-				for (let index = 0; index < entries.length; index++) {
-					const entry = entries[index]!;
-					const entryStatus = overallStatus(entry.tools);
-					lines.push(...branchLine([entryLine(entry, childWidth)], index, entries.length, safeWidth, groupLight(entryStatus, theme), theme));
-					// Running bash keeps its latest visible output row (upstream: grouped
-					// Bash rows show live progress instead of hiding it behind the group).
-					if (entryStatus === "pending" && entry.name === "bash") {
-						const tail = stripToolChrome(entry.tools[0]!.render(childWidth)).slice(-1)[0];
-						if (tail) lines.push(clampLine(` ${theme.fg("dim", "│")}   ${tail}`, safeWidth));
-					}
-				}
+			for (let index = 0; index < this.tools.length; index++) {
+				const tool = this.tools[index]!;
+				lines.push(
+					...branchLine(expandedToolLines(tool, childWidth), index, this.tools.length, safeWidth, groupLight(toolStatus(tool), theme), theme),
+				);
 			}
 		}
-
 		this.lastHeight = lines.length;
 		return lines;
 	}
