@@ -36,7 +36,7 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { dim, italic } from "./palette.js";
 
-const THINKING_TITLE = "∴ Thinking…";
+export const THINKING_TITLE = "∴ Thinking…";
 /** Kept empty: CC has no collapsed-thinking line (see header). */
 const HIDDEN_LABEL_THINKING = "";
 

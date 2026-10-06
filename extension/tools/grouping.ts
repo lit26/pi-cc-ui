@@ -19,7 +19,7 @@
  * Also owns the shared pending-dot blink timer (`armBlink` /
  * `currentBlinkPhase`) that builtins.ts uses for standalone rows.
  */
-import { Container, Spacer, Text, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
+import { Container, Spacer, Text, truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
 import type { TuiMouseEvent } from "@earendil-works/pi-tui";
 import {
 	AssistantMessageComponent,
@@ -29,8 +29,9 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
+import { dim, italic } from "../palette.js";
 import { formatElapsed } from "../spinner.js";
-import { isThinkingExpanded } from "../thinking.js";
+import { THINKING_TITLE, isThinkingExpanded } from "../thinking.js";
 
 export type ToolStatus = "pending" | "success" | "error";
 
@@ -370,6 +371,8 @@ class ToolGroupComponent extends Container {
 	thinkingMs = 0;
 	/** Pointer is over the digest line — the label renders in the accent color. */
 	hovered = false;
+	/** Thinking blocks folded into this group, revealed by Ctrl+O. */
+	private thinkingText: string[] = [];
 	private lastHeight = 0;
 
 	addTool(tool: AnyTool): void {
@@ -378,6 +381,10 @@ class ToolGroupComponent extends Container {
 
 	addThinking(ms: number): void {
 		if (ms > 0) this.thinkingMs += ms;
+	}
+
+	addThinkingText(blocks: string[]): void {
+		for (const block of blocks) if (block.trim()) this.thinkingText.push(block);
 	}
 
 	/** Row index of the digest line: 0 is the blank separator row. */
@@ -454,6 +461,16 @@ class ToolGroupComponent extends Container {
 		const summary = groupSummary(this.tools, this.thinkingMs, status);
 		const lines: string[] = ["", clampLine(`  ${theme.fg(this.hovered ? "accent" : "muted", summary)}`, safeWidth)];
 		if (this.expanded) {
+			// Ctrl+O reveals the thinking that produced the batch. The collapsed
+			// transcript hides it (thinking.ts transformer renders nothing), so the
+			// group is the only place it can come back.
+			for (const block of this.thinkingText) {
+				lines.push(clampLine(`  ${dim(italic(THINKING_TITLE))}`, safeWidth));
+				for (const row of wrapTextWithAnsi(block, Math.max(1, safeWidth - 4))) {
+					lines.push(clampLine(`    ${dim(row)}`, safeWidth));
+				}
+				lines.push("");
+			}
 			const childWidth = Math.max(1, safeWidth - 4);
 			for (let index = 0; index < this.tools.length; index++) {
 				const tool = this.tools[index]!;
@@ -519,11 +536,46 @@ function isIgnorableSeparator(value: unknown): boolean {
 	return true;
 }
 
-function findPreviousToolSibling(children: unknown[], startIndex: number): { child: unknown; index: number } | undefined {
+/** Thinking text of an assistant message that grouping skips as a separator. */
+function thinkingTextOf(value: unknown): string[] {
+	const content = (value as { lastMessage?: { content?: unknown } }).lastMessage?.content;
+	if (!Array.isArray(content)) return [];
+	const out: string[] = [];
+	for (const block of content) {
+		const thinking = (block as { type?: string; thinking?: unknown }).thinking;
+		if ((block as { type?: string }).type === "thinking" && typeof thinking === "string" && thinking.trim()) {
+			out.push(thinking.trim());
+		}
+	}
+	return out;
+}
+
+function harvestThinking(separators: unknown[]): string[] {
+	return separators.flatMap(thinkingTextOf);
+}
+
+/** Ignorable siblings immediately before `endIndex`, in document order. */
+function collectSeparatorsBefore(children: unknown[], endIndex: number): unknown[] {
+	const out: unknown[] = [];
+	for (let index = endIndex; index >= 0; index--) {
+		if (!isIgnorableSeparator(children[index])) break;
+		out.unshift(children[index]);
+	}
+	return out;
+}
+
+function findPreviousToolSibling(
+	children: unknown[],
+	startIndex: number,
+): { child: unknown; index: number; skipped: unknown[] } | undefined {
+	const skipped: unknown[] = [];
 	for (let index = startIndex; index >= 0; index--) {
 		const child = children[index];
-		if (isIgnorableSeparator(child)) continue;
-		return { child, index };
+		if (isIgnorableSeparator(child)) {
+			skipped.unshift(child);
+			continue;
+		}
+		return { child, index, skipped };
 	}
 	return undefined;
 }
@@ -541,6 +593,7 @@ function maybeGroupToolComponent(parent: unknown, component: unknown): void {
 		children.splice(index, 1);
 		previous.addTool(component);
 		previous.addThinking(takeThinkingMs());
+		previous.addThinkingText(harvestThinking(previousEntry.skipped));
 		setComponentParent(component, previous);
 		ACTIVE_TOOL_GROUPS.add(previous);
 		return;
@@ -551,6 +604,9 @@ function maybeGroupToolComponent(parent: unknown, component: unknown): void {
 		group.addTool(previous);
 		group.addTool(component);
 		group.addThinking(takeThinkingMs());
+		group.addThinkingText(
+			harvestThinking([...collectSeparatorsBefore(children, previousEntry.index - 1), ...previousEntry.skipped]),
+		);
 		setComponentParent(group, parent);
 		setComponentParent(previous, group);
 		setComponentParent(component, group);
