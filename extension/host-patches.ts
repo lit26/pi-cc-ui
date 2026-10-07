@@ -46,7 +46,17 @@
  *
  * Patch 4 — 2-column alignment for the rest of the transcript:
  *   (a) UserMessageComponent.prototype.rebuild — the user's own prompt was
- *       also drawn at pi's 1-column pad.
+ *       also drawn at pi's 1-column pad. The child Markdown is then restyled
+ *       to CC's user prompt (UserPromptMessage.tsx / HighlightedThinkingText
+ *       .tsx): no top/bottom pad row, a flat grey background
+ *       (darkTheme rgb(55,55,55) / lightTheme rgb(240,240,240)), and the `❯ `
+ *       pointer at column 0 in front of the text. A theme whose
+ *       userMessageBg is already grey (the CC themes) keeps its exact shade;
+ *       only a coloured background (pi's default `blueBg`) is flattened.
+ *   (a-2) UserMessageComponent.prototype.render — paints the `❯` pointer into
+ *       the first row's gutter (the Markdown owns the row string, so the
+ *       pointer cannot be part of its source text without becoming a
+ *       markdown blockquote).
  *   (b) SettingsManager.prototype.getOutputPad — every pad the host reads
  *       while building the transcript reports 2, so fresh message components
  *       and `this.outputPad` readers land on the same column.
@@ -94,6 +104,8 @@ function isBlankRow(line: unknown): boolean {
 const BLANK_RENDER_FLAG = Symbol.for("better-cc-ui:assistant-blank-render");
 const TEXT_PAD_FLAG = Symbol.for("better-cc-ui:assistant-text-pad");
 const USER_PAD_FLAG = Symbol.for("better-cc-ui:user-text-pad");
+const USER_BG_FLAG = Symbol.for("better-cc-ui:user-message-gray-bg");
+const USER_ARROW_FLAG = Symbol.for("better-cc-ui:user-message-arrow");
 const SETTINGS_PAD_FLAG = Symbol.for("better-cc-ui:settings-output-pad");
 const SHELL_PAD_FLAG = Symbol.for("better-cc-ui:tool-shell-pad");
 const CHILD_PAD_FLAG = Symbol.for("better-cc-ui:transcript-child-pad");
@@ -170,6 +182,74 @@ function ensureChildPad(component: unknown): void {
 /** The exact host notice dropped by patch 2 (interactive-mode.js setToolsExpanded). */
 const TOOL_OUTPUT_STATUS_RE = /^Tool output: (?:expanded|collapsed)$/;
 
+/**
+ * CC user-prompt decoration. UserPromptMessage.tsx paints its Box with
+ * backgroundColor 'userMessageBackground' and no vertical padding;
+ * HighlightedThinkingText.tsx puts `figures.pointer + " "` (`❯ `) in `subtle`
+ * at column 0 ahead of the text, so the text lands on CC's column 2.
+ */
+const USER_ARROW = "\u276F";
+/** The leading ANSI/OSC run of a rendered row (OSC133 marks included). */
+const LEADING_ESCAPE_RE = /^(?:\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\))*/;
+const BG_TRUECOLOR_RE = /\x1b\[48;2;(\d{1,3});(\d{1,3});(\d{1,3})m/;
+/** Above this channel spread a background is coloured, below it is already grey. */
+const GREY_CHROMA = 8;
+/** CC darkTheme / lightTheme userMessageBackground (rgb(55,55,55) / rgb(240,240,240)). */
+const CC_USER_BG_DARK = 55;
+const CC_USER_BG_LIGHT = 240;
+
+/**
+ * Flatten a coloured theme background to CC's grey. A background that is
+ * already grey (every CC theme) passes through untouched so the theme keeps
+ * its exact shade; only a real hue (pi's default `blueBg`) is replaced,
+ * dark or light following the colour's perceptual luminance.
+ */
+function greyOutBackground(wrapped: string, content: string): string {
+	const match = BG_TRUECOLOR_RE.exec(wrapped);
+	if (!match) return wrapped;
+	const r = Number(match[1]);
+	const g = Number(match[2]);
+	const b = Number(match[3]);
+	if (Math.max(r, g, b) - Math.min(r, g, b) < GREY_CHROMA) return wrapped;
+	const lum = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+	const v = lum < 128 ? CC_USER_BG_DARK : CC_USER_BG_LIGHT;
+	return `\x1b[48;2;${v};${v};${v}m${content}\x1b[49m`;
+}
+
+/**
+ * Restyle the user prompt's Markdown child: drop the pad row the host bakes in
+ * (rebuild builds it at paddingY 1 — user-message.js), then grey the background.
+ */
+function styleUserMessage(component: unknown): void {
+	const child = (component as { children?: unknown[] } | undefined)?.children?.[0] as
+		| { paddingY?: number; defaultTextStyle?: object; invalidate?: () => void }
+		| undefined;
+	if (!child) return;
+	if (child.paddingY !== 0) {
+		child.paddingY = 0;
+		child.invalidate?.();
+	}
+	const style = child.defaultTextStyle as Record<string | symbol, unknown> | undefined;
+	if (style && typeof style.bgColor === "function" && !style[USER_BG_FLAG]) {
+		const originalBg = style.bgColor as (content: string) => string;
+		style.bgColor = (content: string) => greyOutBackground(originalBg(content), content);
+		style[USER_BG_FLAG] = true;
+	}
+}
+
+/**
+ * Put the CC `❯ ` pointer in the prompt's opening row. The row starts with the
+ * OSC133 zone mark and a background escape, then the Markdown's left pad; the
+ * pointer replaces one pad space, so the text still lands on the CC column.
+ */
+function prependUserArrow(line: unknown): unknown {
+	if (typeof line !== "string") return line;
+	const prefix = LEADING_ESCAPE_RE.exec(line)?.[0] ?? "";
+	const rest = line.slice(prefix.length);
+	if (!rest.startsWith(" ")) return line;
+	return `${prefix}\x1b[2m${USER_ARROW}\x1b[22m${rest.slice(1)}`;
+}
+
 export function installHostPatches(): void {
 	// eslint-disable-next-line @typescript-eslint/no-explicit-any
 	const amProto = AssistantMessageComponent.prototype as any;
@@ -203,7 +283,8 @@ export function installHostPatches(): void {
 		amProto[TEXT_PAD_FLAG] = true;
 	}
 
-	// Patch 4a — user messages (same coercion as the assistant body).
+	// Patch 4a — user messages (same coercion as the assistant body), plus the
+	// CC prompt restyle (no vertical pad, grey background, `❯` pointer).
 	// eslint-disable-next-line @typescript-eslint/no-explicit-any
 	const umProto = UserMessageComponent.prototype as any;
 	if (!umProto[USER_PAD_FLAG] && typeof umProto.rebuild === "function") {
@@ -212,12 +293,25 @@ export function installHostPatches(): void {
 			const saved = this.outputPad;
 			this.outputPad = ccPad(saved);
 			try {
-				return originalUserRebuild.call(this);
+				const result = originalUserRebuild.call(this);
+				styleUserMessage(this);
+				return result;
 			} finally {
 				this.outputPad = saved;
 			}
 		};
 		umProto[USER_PAD_FLAG] = true;
+	}
+
+	// Patch 4a-2 — the `❯` pointer in the prompt's opening row.
+	if (!umProto[USER_ARROW_FLAG] && typeof umProto.render === "function") {
+		const originalUserRender = umProto.render;
+		umProto.render = function ccUiUserPointerRender(width: number): string[] {
+			const lines = originalUserRender.call(this, width);
+			if (Array.isArray(lines) && lines.length > 0) lines[0] = prependUserArrow(lines[0]);
+			return lines;
+		};
+		umProto[USER_ARROW_FLAG] = true;
 	}
 
 	// Patch 4b — the single pad source the host reads while building rows.
