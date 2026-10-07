@@ -16,6 +16,7 @@
  */
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { installHostPatches } from "./host-patches.js";
+import { loadPaletteOverrides } from "./settings.js";
 import { registerSpinner } from "./spinner.js";
 import { registerTurnFooter } from "./turn-footer.js";
 import { registerBanner } from "./banner.js";
@@ -27,6 +28,9 @@ import { registerThinking } from "./thinking.js";
 import { registerPromptPointer } from "./prompt-editor.js";
 
 export default function (pi: ExtensionAPI) {
+	// User color overrides for the diff renderer (pi-cc-ui.json `palette`).
+	loadPaletteOverrides();
+
 	// Host patches (ghost blank rows, ctrl+o status residue) — before any render.
 	installHostPatches();
 

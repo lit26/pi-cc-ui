@@ -35,6 +35,8 @@ import {
 	createLsToolDefinition,
 	createReadToolDefinition,
 	createWriteToolDefinition,
+	getLanguageFromPath,
+	highlightCode,
 } from "@earendil-works/pi-coding-agent";
 import { sliceByColumn, truncateToWidth, visibleWidth, wrapTextWithAnsi, type Component } from "@earendil-works/pi-tui";
 import { existsSync, readFileSync, statSync } from "node:fs";
@@ -42,21 +44,15 @@ import { homedir } from "node:os";
 import { join, resolve, relative } from "node:path";
 import {
 	DiffCardComponent,
-	parseDiff,
-	renderDiffStatLine,
-	renderUnified,
-	shikiThemeForPalette,
-	shouldUseSplit,
-	renderSplit,
-	MAX_RENDER_LINES,
+	EXPANDED_LINES,
 	MAX_PREVIEW_LINES,
-	diffLanguage,
-	shikiHighlighter,
-	warmHighlightCache,
-	warmDiffHighlight,
+	parseDiff,
+	parseUnifiedPatch,
+	renderDiffBody,
+	renderDiffStatLine,
+	renderNumberedListing,
 	setDiffPalette,
-	type DiffLine,
-	type ParsedDiff,
+	snippetDiff,
 } from "./diff.js";
 import { armBlink, currentBlinkPhase, makeText, setGroupTheme } from "./grouping.js";
 import { resolvePalette, italic, type ResolvedPalette } from "../palette.js";
@@ -209,69 +205,6 @@ function hostToolSettings(cwd: string): { shellPath?: string; commandPrefix?: st
 	// settings-manager normalizes ~ in shellPath before use; mirror that.
 	if (shellPath?.startsWith("~")) shellPath = join(home, shellPath.slice(1));
 	return { shellPath, commandPrefix, autoResizeImages: autoResize ?? true };
-}
-
-/**
- * Parse pi's real unified patch (edit result.details.patch, edit-diff.js
- * generateUnifiedPatch) into a ParsedDiff. The old edits[]-concatenation diff
- * numbered every change from line 1 and had no true file context; the patch
- * carries the real hunk positions (AUDIT §5:817). Returns null when the string
- * has no parseable hunk so callers can fall back.
- */
-function parsePatchToDiff(patch: string): ParsedDiff | null {
-	const rawLines = patch.split("\n");
-	if (rawLines[rawLines.length - 1] === "") rawLines.pop();
-	const lines: DiffLine[] = [];
-	let added = 0;
-	let removed = 0;
-	let chars = 0;
-	let oldLine = 0;
-	let newLine = 0;
-	let inHunk = false;
-	let prevHunk: { oldStart: number; oldLines: number } | null = null;
-	for (const rawWithCr of rawLines) {
-		// pi generateUnifiedPatch splits on "\n" only, so CRLF files leave a
-		// trailing \r on every patch line — carriage returns wipe the drawn
-		// gutter at render time (same cleanse as diff.ts fromPatch, §5:523).
-		const raw = rawWithCr.endsWith("\r") ? rawWithCr.slice(0, -1) : rawWithCr;
-		const h = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/.exec(raw);
-		if (h) {
-			const oldStart = Number(h[1]);
-			const oldCount = h[2] !== undefined ? Number(h[2]) : 1;
-			if (prevHunk) {
-				// Same sep semantics as fromPatch: gap = unchanged lines skipped.
-				const gap = oldStart - (prevHunk.oldStart + prevHunk.oldLines);
-				lines.push({ type: "sep", oldNum: null, newNum: gap > 0 ? gap : null, content: "" });
-			}
-			prevHunk = { oldStart, oldLines: oldCount };
-			oldLine = oldStart;
-			newLine = Number(h[3]);
-			inHunk = true;
-			continue;
-		}
-		if (!inHunk) continue; // ---/+++ file headers
-		if (raw.startsWith("\\")) continue; // "\ No newline at end of file"
-		const marker = raw[0];
-		const text = raw.slice(1);
-		if (marker === "+") {
-			lines.push({ type: "add", oldNum: null, newNum: newLine, content: text });
-			newLine += 1;
-			added += 1;
-			chars += text.length;
-		} else if (marker === "-") {
-			lines.push({ type: "del", oldNum: oldLine, newNum: null, content: text });
-			oldLine += 1;
-			removed += 1;
-			chars += text.length;
-		} else {
-			// " " context; some generators emit blank context lines with no marker.
-			lines.push({ type: "ctx", oldNum: oldLine, newNum: newLine, content: text });
-			oldLine += 1;
-			newLine += 1;
-			chars += text.length;
-		}
-	}
-	return lines.length > 0 ? { lines, added, removed, chars } : null;
 }
 
 /** CC countLines (FileWriteTool/UI.tsx:35-38): a trailing EOL terminates the
@@ -706,7 +639,7 @@ type RenderContext = {
  * The ctrl+o-expanded body shared by read/grep/find/ls: a stat line plus the
  * result rows, budgeted in VISUAL rows at render width.
  *
- * These are already the expanded view, so the row ceiling is MAX_RENDER_LINES
+ * These are already the expanded view, so the row ceiling is EXPANDED_LINES
  * rather than previewLimit(), and the `(ctrl+o to expand)` hint is suppressed —
  * ctrl+o is what got us here. Without a ceiling a single minified row expanded
  * to ~212 rendered rows per line.
@@ -720,7 +653,7 @@ function expandedStatBody(
 ): Component {
 	const joined = lines.join("\n");
 	return widthBudgetedBody(ctx.lastComponent, theme, `${key}\u0000${joined.length}\u0000${joined.slice(0, 4096)}`, (contentWidth) => {
-		const body = renderTruncatedContent(joined, contentWidth, MAX_RENDER_LINES, theme, (l) => theme.fg("dim", l), {
+		const body = renderTruncatedContent(joined, contentWidth, EXPANDED_LINES, theme, (l) => theme.fg("dim", l), {
 			expandHint: false,
 		});
 		return body === "" ? stat : `${stat}\n${body}`;
@@ -836,7 +769,7 @@ export function registerBuiltins(pi: ExtensionAPI): void {
 			if (isPartial) {
 				// CC ShellProgressMessage.tsx:44 — verbose 时流式也走全文
 				// （strippedFullOutput），非 verbose 才是 5 行尾窗。extra detail 对齐
-				// 该行为（head-first 全文），但保留 MAX_RENDER_LINES 视觉行上限防
+				// 该行为（head-first 全文），但保留 EXPANDED_LINES 视觉行上限防
 				// minified 行炸屏。
 				const collected = extraDetail ? collectNonEmptyLines(output) : collectNonEmptyLines(output, STREAM_PREVIEW_ROWS);
 				setLiveLineCount(c, collected.total);
@@ -849,7 +782,7 @@ export function registerBuiltins(pi: ExtensionAPI): void {
 				const key = `stream\u0000${extraDetail}\u0000${collected.total}\u0000${collected.lines.join("\n")}`;
 				return widthBudgetedBody(c.lastComponent, theme, key, (contentWidth) => {
 					if (extraDetail) {
-						const body = renderTruncatedContent(collected.lines.join("\n"), contentWidth, MAX_RENDER_LINES, theme, (l) => theme.fg("dim", l), {
+						const body = renderTruncatedContent(collected.lines.join("\n"), contentWidth, EXPANDED_LINES, theme, (l) => theme.fg("dim", l), {
 							expandHint: false,
 						});
 						return `${theme.fg("dim", "Running…")}\n${body}`;
@@ -894,7 +827,7 @@ export function registerBuiltins(pi: ExtensionAPI): void {
 				// keeps a generous ceiling instead of no ceiling at all.
 				const key = `expanded\u0000${failed}\u0000${exitCode}\u0000${output}`;
 				return widthBudgetedBody(c.lastComponent, theme, key, (contentWidth) => {
-					const body = renderTruncatedContent(collected.lines.join("\n"), contentWidth, MAX_RENDER_LINES, theme, (l) => l, {
+					const body = renderTruncatedContent(collected.lines.join("\n"), contentWidth, EXPANDED_LINES, theme, (l) => l, {
 						expandHint: false,
 					});
 					return status ? `${status}\n${body}` : body;
@@ -1154,77 +1087,79 @@ export function registerBuiltins(pi: ExtensionAPI): void {
 			const fp = String(wargs?.path ?? "");
 			const content = String(wargs?.content ?? "");
 
+			const lineCount = countLines(content);
+			const wrote = `Wrote ${theme.bold(String(lineCount))} ${lineCount === 1 ? "line" : "lines"} to ${theme.bold(shortPath(c.cwd, fp))}`;
+
+			// Snapshot lost (resume/compaction): upstream's explicit message rather
+			// than guessing the history was a new file or an overwrite.
 			if (existedEntry === undefined) {
-				const lineCount = countLines(content);
-				const head = `Wrote ${theme.bold(String(lineCount))} ${lineCount === 1 ? "line" : "lines"} to ${theme.bold(shortPath(c.cwd, fp))}`;
-				return cachedText(c.lastComponent, withResultLead(theme, head));
+				const extra = `${content === "" ? "(No content) · " : ""}Diff unavailable: previous file snapshot not available`;
+				return cachedText(c.lastComponent, leadBody(theme, `${wrote}\n${theme.fg("muted", extra)}`));
 			}
 
 			// AUDIT §2 P0-3 — the old file was too big to snapshot; skip the diff
-			// (parseDiff on a multi-MB file is the OOM path) and just report the
-			// line count, matching CC's "Wrote N lines to <path>".
+			// (parseDiff on a multi-MB file is the OOM path) and just report the count.
 			if (writeOversize.has(c.toolCallId)) {
-				const lineCount = countLines(content);
-				const head = `Wrote ${theme.bold(String(lineCount))} ${lineCount === 1 ? "line" : "lines"} to ${theme.bold(shortPath(c.cwd, fp))}`;
-				return cachedText(c.lastComponent, withResultLead(theme, head));
+				return cachedText(c.lastComponent, withResultLead(theme, wrote));
 			}
 
 			const palette = getPalette(theme);
 			setDiffPalette(palette);
-			const diff = parseDiff(old, content);
-			const lang = diffLanguage(fp);
-			const stat = renderDiffStatLine(diff.added, diff.removed);
-			const key = `write:${c.toolCallId}:${old.length}:${content.length}:${expanded ? 1 : 0}`;
 
-			// New file: CC FileWriteTool/UI.tsx:79-108 — `Wrote N lines to <path>`,
-			// first 10 lines HighlightedCode, `… +N lines`, ctrl+o hint.
-			if (!existed && !expanded) {
-				const lineCount = countLines(content);
-				const shown = (content.endsWith("\n") ? content.slice(0, -1) : content)
-					.split("\n")
-					.slice(0, WRITE_PREVIEW_LINES);
-				const plusLines = lineCount - WRITE_PREVIEW_LINES;
-				const hl = shikiHighlighter(shikiThemeForPalette(palette));
-				let body = hl(shown.join("\n"), lang)?.join("\n") ?? shown.map((l) => theme.fg("dim", l || " ")).join("\n");
-				if (plusLines > 0) {
-					body += `\n${theme.fg("muted", `… +${plusLines} line${plusLines === 1 ? "" : "s"}`)}`;
-				}
-				body += `\n${italic(theme.fg("dim", "(ctrl+o to expand)"))}`;
-				const head = `Wrote ${theme.bold(String(lineCount))} ${lineCount === 1 ? "line" : "lines"} to ${theme.bold(shortPath(c.cwd, fp))}`;
-				// Warm shiki asynchronously; re-render with highlight when ready.
-				// Only attach the .then(invalidate) if this component has not warmed
-				// this key yet — otherwise c.invalidate() re-runs renderResult, which
-				// re-attaches another .then, forming a microtask self-loop that freezes
-				// the TUI (AUDIT §2 P0-2). `key` is not enough on its own because pi
-				// re-runs renderResult on the same key (every frame); track "warmed"
-				// in state so the guard survives re-renders.
-				if (c.state._wwkDone !== key) {
-					c.state._wwkDone = key;
-					void warmHighlightCache(shown.join("\n"), lang, shikiThemeForPalette(palette)).then(() => {
-						if (c.state._wwkDone !== key) return;
-						c.invalidate();
+			// New file: CC FileWriteTool/UI.tsx — `Wrote N lines to <path>` then a
+			// numbered listing of the content (10 lines collapsed, ctrl+o to expand).
+			if (!existed) {
+				const key = `write-new:${c.toolCallId}:${content.length}:${expanded ? 1 : 0}`;
+				const build = (width: number, pal: ResolvedPalette): string[] => {
+					const lead = wrapResultBody(withResultLead(theme, wrote), width, RESULT_CONTENT_COL);
+					if (content === "") {
+						return [...lead, `${RESULT_INDENT}${theme.fg("muted", "(No content)")}`];
+					}
+					const all = (content.endsWith("\n") ? content.slice(0, -1) : content).split("\n");
+					const maxRows = expanded ? EXPANDED_LINES : WRITE_PREVIEW_LINES;
+					const shown = all.slice(0, maxRows);
+					const language = getLanguageFromPath(fp);
+					const highlighted = language === undefined ? shown : highlightCode(shown.join("\n"), language);
+					const listed = highlighted.length === shown.length ? highlighted : shown;
+					const bodyWidth = Math.max(1, width - RESULT_INDENT.length);
+					const body = renderNumberedListing(pal, listed, bodyWidth, {
+						hiddenLines: all.length - shown.length,
+						expandHint: !expanded,
+						maxRows,
 					});
+					return [...lead, ...body.map((l) => `${RESULT_INDENT}${l}`)];
+				};
+				const last = c.lastComponent as DiffCardComponent | undefined;
+				if (last instanceof DiffCardComponent && last.diffKey === key) {
+					last.setBuild(build);
+					return last;
 				}
-				return cachedText(c.lastComponent, leadBody(theme, `${head}\n${body}`));
+				const card = new DiffCardComponent(build);
+				card.diffKey = key;
+				return card;
 			}
 
-			// Existing file (or expanded new file): diff card. CC puts stat and
-			// diff body in one MessageResponse — body indents to column 5.
+			// Overwrite: diff the new content against the pre-write snapshot. CC puts
+			// stat and diff body in one MessageResponse — body indents to column 5.
 			// §5:942 — render with the palette the card passes in (the ACTIVE one),
 			// not the closure capture: on theme change pi invalidates without
 			// re-running renderResult, so a captured palette would go stale.
+			const diff = parseDiff(old, content);
+			const stat = renderDiffStatLine(diff.added, diff.removed);
+			const unchanged = content === "" ? "Replaced with empty content" : "Replaced; no textual changes";
+			const key = `write:${c.toolCallId}:${old.length}:${content.length}:${expanded ? 1 : 0}`;
 			const build = (width: number, pal: ResolvedPalette): string[] => {
-				const lead = wrapResultBody(withResultLead(theme, stat || "Written"), width, RESULT_CONTENT_COL);
+				const lead = wrapResultBody(
+					withResultLead(theme, diff.notice === undefined ? stat || unchanged : wrote),
+					width,
+					RESULT_CONTENT_COL,
+				);
 				if (old === content) return lead;
-				const options = {
-					maxLines: expanded ? MAX_RENDER_LINES : MAX_PREVIEW_LINES,
-					language: lang,
-					highlight: shikiHighlighter(),
-				};
 				const bodyWidth = Math.max(1, width - RESULT_INDENT.length);
-				const body = shouldUseSplit(diff, bodyWidth)
-					? renderSplit(pal, diff, bodyWidth, options)
-					: renderUnified(pal, diff, bodyWidth, options);
+				const body = renderDiffBody(pal, diff, bodyWidth, {
+					maxLines: expanded ? EXPANDED_LINES : MAX_PREVIEW_LINES,
+					expandHint: !expanded,
+				});
 				return [...lead, ...body.map((l) => `${RESULT_INDENT}${l}`)];
 			};
 			const last = c.lastComponent as DiffCardComponent | undefined;
@@ -1234,18 +1169,6 @@ export function registerBuiltins(pi: ExtensionAPI): void {
 			}
 			const card = new DiffCardComponent(build);
 			card.diffKey = key;
-			if (old !== content) {
-				c.state._wdk = key;
-				// Warm the exact per-side strings the diff renderer will query (both
-				// layouts), not the whole-file content — the old
-				// warmHighlightCache(content, …) warmed a string no renderer looks up,
-				// so the cache always missed and the old side never warmed (AUDIT §5 diff.ts:646).
-				void warmDiffHighlight(diff, { maxLines: expanded ? MAX_RENDER_LINES : MAX_PREVIEW_LINES, language: lang, theme: shikiThemeForPalette(palette) }).then(() => {
-					if (c.state._wdk !== key) return;
-					card.invalidate();
-					c.invalidate();
-				});
-			}
 			return card;
 		},
 	});
@@ -1289,33 +1212,27 @@ export function registerBuiltins(pi: ExtensionAPI): void {
 			setDiffPalette(palette);
 			// AUDIT §5:817 — prefer pi's real unified patch (result.details.patch,
 			// generateUnifiedPatch against the actual file): true line numbers and
-			// real context. The edits[]-concatenation is only the fallback for
-			// history entries that predate details.
+			// real context. Without it, diff each edit's own snippet (upstream
+			// snippetDiff) because no file coordinates exist to place the hunks at.
 			const details = (result as { details?: { patch?: string } }).details;
-			const patchDiff = typeof details?.patch === "string" ? parsePatchToDiff(details.patch) : null;
-			const oldCombined = edits.map((e) => e.oldText).join("\n");
-			const newCombined = edits.map((e) => e.newText).join("\n");
-			const diff = patchDiff ?? parseDiff(oldCombined, newCombined);
-			const lang = diffLanguage(fp);
+			const patch = typeof details?.patch === "string" && details.patch !== "" ? details.patch : undefined;
+			const diff = (patch === undefined ? undefined : parseUnifiedPatch(patch)) ?? snippetDiff(edits);
 			const stat = renderDiffStatLine(diff.added, diff.removed);
-			const key = `edit:${c.toolCallId}:${fp}:${patchDiff ? `p${details!.patch!.length}` : `e${edits.length}:${oldCombined.length}:${newCombined.length}`}:${expanded ? 1 : 0}`;
+			const editChars = edits.reduce((total, edit) => total + edit.oldText.length + edit.newText.length, 0);
+			const key = `edit:${c.toolCallId}:${fp}:${edits.length}:${editChars}:${patch?.length ?? -1}:${expanded ? 1 : 0}`;
 
-			// CC FileEditToolUpdatedMessage: stat + StructuredDiffList in one
-			// MessageResponse — body indents to column 5.
+			// CC FileEditToolUpdatedMessage: stat + diff body in one MessageResponse
+			// — body indents to column 5.
 			// §5:942 — use the card-supplied active palette, not the closure capture
 			// (same rationale as the write card above).
 			const build = (width: number, pal: ResolvedPalette): string[] => {
 				const lead = wrapResultBody(withResultLead(theme, stat || "Applied"), width, RESULT_CONTENT_COL);
-				if (diff.lines.length === 0) return lead;
-				const options = {
-					maxLines: expanded ? MAX_RENDER_LINES : MAX_PREVIEW_LINES,
-					language: lang,
-					highlight: shikiHighlighter(),
-				};
+				if (diff.lines.length === 0 && diff.notice === undefined) return lead;
 				const bodyWidth = Math.max(1, width - RESULT_INDENT.length);
-				const body = shouldUseSplit(diff, bodyWidth)
-					? renderSplit(pal, diff, bodyWidth, options)
-					: renderUnified(pal, diff, bodyWidth, options);
+				const body = renderDiffBody(pal, diff, bodyWidth, {
+					maxLines: expanded ? EXPANDED_LINES : MAX_PREVIEW_LINES,
+					expandHint: !expanded,
+				});
 				return [...lead, ...body.map((l) => `${RESULT_INDENT}${l}`)];
 			};
 			const last = c.lastComponent as DiffCardComponent | undefined;
@@ -1325,17 +1242,6 @@ export function registerBuiltins(pi: ExtensionAPI): void {
 			}
 			const card = new DiffCardComponent(build);
 			card.diffKey = key;
-			if (diff.lines.length > 0) {
-				c.state._edk = key;
-				// Warm the per-side strings the renderer queries (AUDIT §5 diff.ts:646);
-				// the old warmHighlightCache(newCombined, …) warmed only the joined new
-				// side under a string no renderer ever looks up.
-				void warmDiffHighlight(diff, { maxLines: expanded ? MAX_RENDER_LINES : MAX_PREVIEW_LINES, language: lang, theme: shikiThemeForPalette(palette) }).then(() => {
-					if (c.state._edk !== key) return;
-					card.invalidate();
-					c.invalidate();
-				});
-			}
 			return card;
 		},
 	});
