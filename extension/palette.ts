@@ -38,6 +38,41 @@ const CANVAS_LIGHT: Rgb = rgb(255, 255, 255);
 /** A palette value: a 24-bit hex string, or a basic ANSI index (0-15). */
 export type ColorValue = string | number;
 
+/** A user-supplied diff color override: `#RRGGBB` or a 0-255 color index. */
+export type SemanticColor = ColorValue;
+
+// ---------------------------------------------------------------------------
+// Semantic overrides — upstream pi-cc-ui reads these from the `palette` key of
+// ~/.pi/agent/pi-cc-ui.json (its /cc settings screen writes them). Diff roles:
+// diffAddedLine, diffRemovedLine, diffAddedWord, diffRemovedWord, diffLineNumber,
+// diffAddedDecoration, diffRemovedDecoration, each with a `Dim`-suffixed sibling
+// used while the diffDimmed flag is on.
+// ---------------------------------------------------------------------------
+
+let semanticOverrides: Readonly<Record<string, unknown>> = {};
+
+export function setDiffOverrides(values: Readonly<Record<string, unknown>>): void {
+	semanticOverrides = values;
+}
+
+function isSemanticColor(value: unknown): value is SemanticColor {
+	if (typeof value === "number") {
+		return Number.isInteger(value) && value >= 0 && value <= 255;
+	}
+	return typeof value === "string" && /^#[\da-fA-F]{6}$/u.test(value);
+}
+
+/** A color override for a semantic role, or undefined when unset. */
+export function semanticOverride(role: string): SemanticColor | undefined {
+	const value = semanticOverrides[role];
+	return isSemanticColor(value) ? value : undefined;
+}
+
+/** A boolean flag override (currently just `diffDimmed`). */
+export function semanticFlag(role: string): boolean {
+	return semanticOverrides[role] === true;
+}
+
 /** Terminal color depth, mirroring pi Theme's getColorMode() (theme.d.ts:8). */
 export type ColorMode = "truecolor" | "256color";
 
@@ -245,6 +280,11 @@ export interface ResolvedPalette {
 	cc: CcPalette;
 	chrome: DiffChrome;
 	scheme: "dark" | "light";
+	/**
+	 * Theme variant key used by per-variant tables (diffDimmed line washes): the
+	 * CC theme key for a CC theme, else the scheme.
+	 */
+	variant: string;
 	/** True when the palette came from a CC theme (vs. pi-token fallback). */
 	isCcTheme: boolean;
 	/** Terminal color depth; drives whether fgAnsi/bgAnsi emit 24-bit or 256. */
@@ -253,11 +293,10 @@ export interface ResolvedPalette {
 
 /**
  * Memo so the same theme name always yields the same ResolvedPalette instance.
- * diff.ts:460 guards its shiki re-warm with `p === activeSgrPalette`; without a
- * stable instance that guard is always false, so every write/edit render would
- * re-run setDiffPalette's full cache re-warm (and, combined with the Map-mutation
- * bug it used to trip, freeze the TUI). A theme switch changes the name, so the
- * guard still fires correctly across real theme changes.
+ * DiffCardComponent keys its width cache on the palette identity
+ * (`cachePalette !== activeSgrPalette`), so a fresh instance per render would
+ * throw the cache away every frame. A theme switch changes the name, so the
+ * identity check still fires correctly across real theme changes.
  */
 const paletteCache = new Map<string, ResolvedPalette>();
 
@@ -322,7 +361,7 @@ function buildPalette(
 	const key = paletteKeyForThemeName(themeName);
 	const scheme = isLightThemeName(themeName) ? "light" : "dark";
 	if (key !== undefined) {
-		return { cc: PALETTES[key], chrome: scheme === "light" ? DIFF_CHROME_LIGHT : DIFF_CHROME_DARK, scheme, isCcTheme: true, colorMode };
+		return { cc: PALETTES[key], chrome: scheme === "light" ? DIFF_CHROME_LIGHT : DIFF_CHROME_DARK, scheme, variant: key, isCcTheme: true, colorMode };
 	}
 	// Fallback: synthesize a palette from the active pi theme's tokens.
 	const tok = (token: string, fallback: ColorValue): ColorValue => {
@@ -340,8 +379,8 @@ function buildPalette(
 	// scheme's canvas. Only when the token is unset do we fall back to CC's own
 	// already-distinct hardcoded pair.
 	const canvas = scheme === "light" ? CANVAS_LIGHT : CANVAS_DARK;
-	// Light schemes read better with a lighter wash; dark schemes with a darker one.
-	const washT = scheme === "light" ? 0.7 : 0.72;
+	// Upstream pi-cc-ui 0.5.0 wash factors (DERIVED_WASH_LIGHT/DARK).
+	const washT = scheme === "light" ? 0.45 : 0.5;
 	const diffPair = (token: string, lineFallback: string, wordFallback: string): { lineBg: ColorValue; word: ColorValue } => {
 		const ansi = tokenFg(token);
 		const parsed = ansi ? parseAnsiRgb(ansi) : undefined;
@@ -371,7 +410,7 @@ function buildPalette(
 		selectionBg: tok("selectedBg", "#264F78"),
 		bashMsgBg: tok("toolSuccessBg", "#413C41"),
 	};
-	return { cc: fallback, chrome: scheme === "light" ? DIFF_CHROME_LIGHT : DIFF_CHROME_DARK, scheme, isCcTheme: false, colorMode };
+	return { cc: fallback, chrome: scheme === "light" ? DIFF_CHROME_LIGHT : DIFF_CHROME_DARK, scheme, variant: scheme, isCcTheme: false, colorMode };
 }
 
 // ---------------------------------------------------------------------------

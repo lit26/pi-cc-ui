@@ -13,6 +13,7 @@ import { join } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { setExtraDetail } from "./tools/builtins.js";
 import { bustGroupingSettingsCache, repaintGroupedRows } from "./tools/grouping.js";
+import { DIFF_COLOR_ROLES, palettePrefs, setPalettePref } from "./settings.js";
 
 const SETTINGS_KEY_GROUP = "groupToolCalls";
 const SETTINGS_KEY_EXTRA_DETAIL = "ccToolsExtraDetail";
@@ -138,12 +139,63 @@ export function registerCommands(pi: ExtensionAPI): void {
 						[
 							`Tool grouping: ${groupingEnabled ? "on" : "off"}`,
 							`Extra detail: ${extraDetail ? "on" : "off"} (/cc-tools detail on|off|toggle)`,
+							`Diff dimmed: ${palettePrefs()["diffDimmed"] === true ? "on" : "off"} (/cc-tools dimmed on|off)`,
 							"  /cc-tools group on|off|toggle",
 							"  /cc-tools detail on|off|toggle",
+							"  /cc-tools color [role] [#RRGGBB|0-255|off]",
 						].join("\n"),
 						"info",
 					);
 				}
+				return;
+			}
+
+			// Per-color diff overrides, same roles and file as upstream's /cc:
+			// ~/.pi/agent/pi-cc-ui.json, key "palette". Values are #RRGGBB or 0-255.
+			if (sub === "color" || sub === "colour") {
+				const role = parts[1];
+				const value = parts[2];
+				if (role === undefined || role === "list") {
+					if (ctx.hasUI) {
+						const current = palettePrefs();
+						ctx.ui.notify(
+							DIFF_COLOR_ROLES.map((r) => `${r}: ${String(current[r] ?? "(theme)")}`).join("\n"),
+							"info",
+						);
+					}
+					return;
+				}
+				if (!(DIFF_COLOR_ROLES as readonly string[]).includes(role)) {
+					if (ctx.hasUI) ctx.ui.notify(`Unknown diff color role "${role}".`, "error");
+					return;
+				}
+				if (value === undefined) {
+					if (ctx.hasUI) ctx.ui.notify(`${role}: ${String(palettePrefs()[role] ?? "(theme)")}`, "info");
+					return;
+				}
+				if (value === "off" || value === "reset" || value === "default") {
+					setPalettePref(role, null);
+					if (ctx.hasUI) ctx.ui.notify(`${role}: (theme)`, "info");
+					return;
+				}
+				const asIndex = Number(value);
+				if (/^#[\da-f]{6}$/u.test(value)) {
+					setPalettePref(role, value);
+				} else if (Number.isInteger(asIndex) && asIndex >= 0 && asIndex <= 255) {
+					setPalettePref(role, asIndex);
+				} else {
+					if (ctx.hasUI) ctx.ui.notify(`Bad color "${value}": use #RRGGBB or 0-255.`, "error");
+					return;
+				}
+				if (ctx.hasUI) ctx.ui.notify(`${role}: ${value}`, "info");
+				return;
+			}
+
+			if (sub === "dimmed" || sub === "dim") {
+				const v = parts[1];
+				const next = v === "on" ? true : v === "off" ? false : palettePrefs()["diffDimmed"] !== true;
+				setPalettePref("diffDimmed", next);
+				if (ctx.hasUI) ctx.ui.notify(`Diff dimmed: ${next ? "on" : "off"}`, "info");
 				return;
 			}
 

@@ -51,15 +51,21 @@ that project use the condensed logo.
 - **Status line** — model, cwd (with `~` shortening), git branch
 - **Spinner** — CC's verb rotation with byline: elapsed time, token count, `esc to interrupt`
 - **Turn footer** — per-request cost/duration summary, matching CC v2.1.234 behavior
-- **Tool rendering** — CC-style tool rows (no background box), grouped consecutive tool calls collapsing into CC's one-line digest (`Read a file, ran 6 shell commands`, with `Thought for Xs` folded in when it is worth reporting), preceded by a blank separator row and carrying no status dot; `Ctrl+O` expands the members as `├`/`└` branch rows. CC-faithful diff rendering with syntax highlighting (shiki)
+- **Tool rendering** — CC-style tool rows (no background box), grouped consecutive tool calls collapsing into CC's one-line digest (`Read a file, ran 6 shell commands`, with `Thought for Xs` folded in when it is worth reporting), preceded by a blank separator row and carrying no status dot; `Ctrl+O` expands the members as `├`/`└` branch rows. CC-faithful diff rendering: line number, sign and content with full-width backgrounds on changed lines and word-level fills where a line only partly changed. Edits use pi's persisted patch for real line numbers and fall back to per-edit snippets; overwrites are diffed against the pre-write file (up to 1 MiB); previews stop at 60 lines. Oversized or too-expensive pairs render a `Diff unavailable` notice instead of blocking the TUI.
 - **Thinking** — collapsed by default with CC's label treatment; `alt+t` to expand
 - **Prompt editor** — CC's `❯` prompt pointer
 
 **Commands**:
 
 - `/cc-theme` — theme picker (CC themes only)
-- `/cc-tools` — toggle CC-style tool rendering options
+- `/cc-tools` — toggle CC-style tool rendering options (`/cc-tools group`, `/cc-tools detail`, `/cc-tools dimmed`, `/cc-tools color <role> <#RRGGBB|0-255|off>`)
 - `/cc-spinner` — spinner options
+
+### Diff colors
+
+Diff colors follow the active theme, derived from its `toolDiffAdded` / `toolDiffRemoved` tokens for non-CC themes. Override individual roles with `/cc-tools color`, or by editing the `palette` key of `~/.pi/agent/pi-cc-ui.json` (the same file upstream pi-cc-ui uses):
+
+`diffAddedLine`, `diffRemovedLine`, `diffAddedWord`, `diffRemovedWord`, `diffLineNumber`, `diffAddedDecoration`, `diffRemovedDecoration` — each `#RRGGBB` or a 0-255 color index. `diffDimmed: true` softens the changed-line backgrounds; the four diff colors also accept a `Dim`-suffixed key for that mode.
 
 ## Layout
 
@@ -77,7 +83,7 @@ extension/
   host-patches.ts   prototype-method wraps for two public pi exports
   tools/
     builtins.ts     CC-style rendering for built-in tools
-    diff.ts         CC-faithful diff rendering (shiki highlighting)
+    diff.ts         CC-faithful diff rendering (upstream pi-cc-ui 0.5.0 layout)
     grouping.ts     grouped consecutive tool calls (single row / branch rows)
     collapse.ts     collapsed tool output state
 theme/              six CC theme JSON files
