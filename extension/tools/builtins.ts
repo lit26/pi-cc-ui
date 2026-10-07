@@ -100,7 +100,7 @@ export function setExtraDetail(v: boolean): void {
 	extraDetail = v;
 }
 
-function previewLimit(): number {
+export function previewLimit(): number {
 	return extraDetail ? EXTRA_DETAIL_LINES : PREVIEW_LINES;
 }
 
@@ -303,7 +303,7 @@ function visualRowsHead(text: string, wrapWidth: number, rows: number): { shown:
  * `rows` is the visual-row budget; `wrapWidth` is the content width (terminal
  * width minus the `⎿  ` gutter). Returns styled text ready for leadBody().
  */
-function renderTruncatedContent(
+export function renderTruncatedContent(
 	text: string,
 	wrapWidth: number,
 	rows: number,

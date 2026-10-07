@@ -51,7 +51,7 @@ that project use the condensed logo.
 - **Status line** — model, cwd (with `~` shortening), git branch
 - **Spinner** — CC's verb rotation with byline: elapsed time, token count, `esc to interrupt`
 - **Turn footer** — per-request cost/duration summary, matching CC v2.1.234 behavior
-- **Tool rendering** — CC-style tool rows (no background box), grouped consecutive tool calls collapsing into CC's one-line digest (`Read a file, ran 6 shell commands`, with `Thought for Xs` folded in when it is worth reporting), preceded by a blank separator row and carrying no status dot; `Ctrl+O` expands the members as `├`/`└` branch rows. CC-faithful diff rendering: line number, sign and content with full-width backgrounds on changed lines and word-level fills where a line only partly changed. Edits use pi's persisted patch for real line numbers and fall back to per-edit snippets; overwrites are diffed against the pre-write file (up to 1 MiB); previews stop at 60 lines. Oversized or too-expensive pairs render a `Diff unavailable` notice instead of blocking the TUI.
+- **Tool rendering** — CC-style tool rows (no background box), grouped consecutive tool calls collapsing into CC's one-line digest (`Read a file, ran 6 shell commands`, with `Thought for Xs` folded in when it is worth reporting), preceded by a blank separator row and carrying no status dot; `Ctrl+O` expands the members as `├`/`└` branch rows. Every tool pi-cc-ui does not own — MCP tools, other extensions' tools, unknown tools — gets the same `● Name(args)` header and `⎿` result frame instead of pi's padded box; an extension that ships its own renderer keeps it, inside the frame. Tools with no renderer show a result preview with compact JSON pretty-printed and URLs clickable. CC-faithful diff rendering: line number, sign and content with full-width backgrounds on changed lines and word-level fills where a line only partly changed. Edits use pi's persisted patch for real line numbers and fall back to per-edit snippets; overwrites are diffed against the pre-write file (up to 1 MiB); previews stop at 60 lines. Oversized or too-expensive pairs render a `Diff unavailable` notice instead of blocking the TUI.
 - **Thinking** — collapsed by default with CC's label treatment; `alt+t` to expand
 - **Prompt editor** — CC's `❯` prompt pointer
 
@@ -80,13 +80,14 @@ extension/
   prompt-editor.ts  CC's ❯ prompt pointer
   palette.ts        color palette helpers
   commands.ts       /cc-theme, /cc-tools, /cc-spinner
-  host-patches.ts   prototype-method wraps for two public pi exports
+  host-patches.ts   prototype-method wraps for public pi exports (incl. the MCP/extension tool frame)
   tools/
     builtins.ts     CC-style rendering for built-in tools
     diff.ts         CC-faithful diff rendering (upstream pi-cc-ui 0.5.0 layout)
     grouping.ts     grouped consecutive tool calls (single row / branch rows)
+    shell.ts        CC frame for MCP/extension/unknown tools (upstream 0.5.0 behavior)
 theme/              six CC theme JSON files
-tests/              bun test — diff/palette/status-line pure-function coverage
+tests/              bun test — diff/palette/shell/status-line pure-function coverage
 ```
 
 ## Development
@@ -95,7 +96,7 @@ Pure functions are covered by `bun test` (no build step — pi loads `extension/
 as TypeScript). Type checking is strict and must stay clean:
 
 ```sh
-bun test          # 43 tests across tests/
+bun test          # 63 tests across tests/
 npm run typecheck # tsc --noEmit
 ```
 

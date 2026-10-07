@@ -61,9 +61,11 @@
  *       while building the transcript reports 2, so fresh message components
  *       and `this.outputPad` readers land on the same column.
  *   (c) ToolExecutionComponent.prototype.render — tools without a custom
- *       `renderShell` (the `question` tool, pi-code's todo/web/subagent/MCP
- *       tools, unknown/fallback tools) render through the host Box/Text with
- *       pad 1; bump it to 2 so their rows align with the CC-style builtins.
+ *       `renderShell` (the `question` tool, pi-code's todo/web/subagent tools,
+ *       MCP tools, unknown/fallback tools) are drawn by shell.ts in CC's
+ *       `● Name(args)` / `⎿` frame instead of pi's padded Box; the pad bump is
+ *       kept for any shape the frame declines, so their rows still align with
+ *       the CC-style builtins.
  *   (d) Transcript-container child pad — the host hardcodes `1` for many
  *       transcript rows that never consult outputPad (`showWarning` is one:
  *       `new ThemedText(..., 1, 0)`), so no pad-source patch can reach them.
@@ -90,7 +92,9 @@ import {
 	ToolExecutionComponent,
 	UserMessageComponent,
 } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, Theme } from "@earendil-works/pi-coding-agent";
 import { Container, Loader } from "@earendil-works/pi-tui";
+import { renderToolShell } from "./tools/shell.js";
 
 // CSI + OSC (BEL or ST terminated) + charset selects. OSC matters: the host
 // render wraps a message's first/last row in OSC133 zone marks, which the
@@ -112,6 +116,13 @@ const CHILD_PAD_FLAG = Symbol.for("better-cc-ui:transcript-child-pad");
 const REGISTER_PAD_FLAG = Symbol.for("better-cc-ui:transcript-register");
 const WORKING_PAD_FLAG = Symbol.for("better-cc-ui:working-indicator-pad");
 const STATUS_FLAG = Symbol.for("better-cc-ui:tool-output-status");
+
+/** Live theme proxy captured at session_start, read at render time. */
+let shellTheme: Theme | undefined;
+
+function setHostTheme(theme: Theme | undefined): void {
+	shellTheme = theme;
+}
 
 /** CC column for transcript rows = the tool-name column (`● ` = 2). */
 const CC_OUTPUT_PAD = 2;
@@ -250,7 +261,14 @@ function prependUserArrow(line: unknown): unknown {
 	return `${prefix}\x1b[2m${USER_ARROW}\x1b[22m${rest.slice(1)}`;
 }
 
-export function installHostPatches(): void {
+export function installHostPatches(pi: ExtensionAPI): void {
+	// The theme is only reachable from the extension context; capture the live
+	// proxy once per session so the generic tool frame can color itself.
+	pi.on("session_start", (_event, ctx) => {
+		const theme = (ctx.ui as { theme?: Theme } | undefined)?.theme;
+		if (theme) setHostTheme(theme);
+	});
+
 	// eslint-disable-next-line @typescript-eslint/no-explicit-any
 	const amProto = AssistantMessageComponent.prototype as any;
 	if (!amProto[BLANK_RENDER_FLAG] && typeof amProto.render === "function") {
@@ -355,12 +373,20 @@ export function installHostPatches(): void {
 		imProto[REGISTER_PAD_FLAG] = true;
 	}
 
-	// Patch 4c — default-shell tool rows (question, todo, mcp, fallback).
+	// Patch 4c — tool rows without a `renderShell: "self"` renderer (MCP tools,
+	// extension tools, unknown/fallback tools). pi-cc-ui frames them CC-style
+	// (`● Name(args)` header + `⎿` result) instead of leaving pi's padded Box.
+	// The pad bump remains the fallback for shapes the frame declines (and for
+	// the brief window before session_start supplies the theme).
 	// eslint-disable-next-line @typescript-eslint/no-explicit-any
 	const tProto = ToolExecutionComponent.prototype as any;
 	if (!tProto[SHELL_PAD_FLAG] && typeof tProto.render === "function") {
 		const originalToolRender = tProto.render;
 		tProto.render = function ccUiAlignedToolShellRender(width: number): string[] {
+			if (shellTheme) {
+				const framed = renderToolShell(this, width, shellTheme);
+				if (framed !== undefined) return framed;
+			}
 			if (this.contentBox) this.contentBox.paddingX = ccPad(this.contentBox.paddingX ?? 1);
 			if (this.contentText) this.contentText.paddingX = ccPad(this.contentText.paddingX ?? 1);
 			return originalToolRender.call(this, width);

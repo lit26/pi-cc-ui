@@ -32,7 +32,7 @@ export default function (pi: ExtensionAPI) {
 	loadPaletteOverrides();
 
 	// Host patches (ghost blank rows, ctrl+o status residue) — before any render.
-	installHostPatches();
+	installHostPatches(pi);
 
 	// Layer 2: chrome
 	registerSpinner(pi);
