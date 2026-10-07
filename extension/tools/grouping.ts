@@ -427,7 +427,7 @@ class ToolGroupComponent extends Container {
 		this.requestRender();
 	}
 
-	invalidate(): void {
+	override invalidate(): void {
 		// Deliberately not cascading: children keep their own render caches and
 		// recompute only when their content actually changes.
 	}
@@ -442,7 +442,7 @@ class ToolGroupComponent extends Container {
 		}
 	}
 
-	handleMouse(event: TuiMouseEvent): ReturnType<Container["handleMouse"]> {
+	override handleMouse(event: TuiMouseEvent): ReturnType<Container["handleMouse"]> {
 		if (event.type === "move") {
 			if (event.y !== this.labelRow()) return undefined;
 			this.setHovered(true);
@@ -463,7 +463,7 @@ class ToolGroupComponent extends Container {
 		};
 	}
 
-	render(width: number): string[] {
+	override render(width: number): string[] {
 		if (this.tools.length === 0) {
 			this.lastHeight = 0;
 			return [];

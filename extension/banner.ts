@@ -441,8 +441,8 @@ export class BannerComponent {
 
 		// Content rows: │ left │ right │
 		for (let i = 0; i < height; i++) {
-			const left = i < leftRows.length ? leftRows[i] : "";
-			const right = i < rightRows.length ? rightRows[i] : "";
+			const left = leftRows[i] ?? "";
+			const right = rightRows[i] ?? "";
 			rows.push(
 				`${this.border(theme, "│")} ${padRight(left, leftWidth)} ${this.border(theme, "│")} ${padRight(right, rightWidth)} ${this.border(theme, "│")}`,
 			);
@@ -490,7 +490,7 @@ export class BannerComponent {
 		const height = Math.max(PI_LOGO.length, lines.length);
 		for (let i = 0; i < height; i++) {
 			const art = PI_LOGO[i] ?? " ".repeat(logoWidth);
-			const text = i < lines.length ? truncateToWidth(lines[i], textWidth, "") : "";
+			const text = i < lines.length ? truncateToWidth(lines[i] ?? "", textWidth, "") : "";
 			const pad = " ".repeat(Math.max(0, textWidth - visibleWidth(text)));
 			rows.push(
 				`${this.border(theme, "│")} ${accent(art)}  ${text}${pad} ${this.border(theme, "│")}`,
