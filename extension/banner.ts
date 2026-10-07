@@ -64,6 +64,18 @@ const PI_LOGO: readonly string[] = [
 	"████      ████",
 ];
 
+// Compact mark for the condensed/boxed tiers, where the logo sits beside the
+// 3-4 line identity stack and the full 6-row mark towers over it. The pi.dev
+// 4x4 logo grid drawn 2 chars per cell (2-cell strokes, square aspect) — the
+// same P+i glyph at half the height and a thinner, lighter stroke. Trailing
+// spaces keep every row the same width so the text column stays aligned.
+const PI_LOGO_SMALL: readonly string[] = [
+	"██████  ",
+	"██  ██  ",
+	"████  ██",
+	"██    ██",
+];
+
 export interface BannerInfo {
 	model: () => string | undefined;
 	cwd: string;
@@ -337,7 +349,7 @@ export class BannerComponent {
 		const accent = ccAccent(theme);
 		const bold = (s: string): string => theme.bold(s);
 
-		const logoWidth = Math.max(...PI_LOGO.map((row) => visibleWidth(row)));
+		const logoWidth = Math.max(...PI_LOGO_SMALL.map((row) => visibleWidth(row)));
 		// Too narrow to sit the info column beside the mark → borderless centered
 		// stack (same degradation as the compact box, no overflow).
 		if (width < logoWidth + 4 + 8) return this.renderCompactPlain(width, theme);
@@ -355,11 +367,16 @@ export class BannerComponent {
 			...(resumed ? [dim(truncateToWidth(resumed, textWidth, "…"))] : []),
 		];
 
-		// Lay the mark alongside the info column, top-aligned, gap of 2 spaces.
-		const height = Math.max(PI_LOGO.length, info.length);
+		// Lay the mark alongside the info column, vertically centered against it,
+		// gap of 2 spaces.
+		const logoRows = PI_LOGO_SMALL.length;
+		const height = Math.max(logoRows, info.length);
+		const logoTop = Math.floor((height - logoRows) / 2);
 		const rows: string[] = [];
 		for (let i = 0; i < height; i++) {
-			const art = PI_LOGO[i] ?? " ".repeat(logoWidth);
+			const logoIndex = i - logoTop;
+			const art =
+				logoIndex >= 0 && logoIndex < logoRows ? (PI_LOGO_SMALL[logoIndex] ?? "") : " ".repeat(logoWidth);
 			const line = i < info.length ? info[i] : "";
 			rows.push(truncateToWidth(` ${accent(art)}  ${line}`, Math.max(1, width), ""));
 		}
@@ -475,7 +492,7 @@ export class BannerComponent {
 			dim(cwd),
 			...(resumed ? [dim(resumed)] : []),
 		];
-		const logoWidth = Math.max(...PI_LOGO.map((row) => visibleWidth(row)));
+		const logoWidth = Math.max(...PI_LOGO_SMALL.map((row) => visibleWidth(row)));
 		// Chrome beyond logo + text: 2 borders + 2 padding + 2 gap.
 		const overhead = logoWidth + 6;
 		// dsh-tui transcript.ts:651-654 — the box hugs its widest identity line
@@ -487,9 +504,12 @@ export class BannerComponent {
 		const boxWidth = overhead + textWidth;
 
 		const rows: string[] = [this.border(theme, `╭${"─".repeat(boxWidth - 2)}╮`)];
-		const height = Math.max(PI_LOGO.length, lines.length);
+		const logoRows = PI_LOGO_SMALL.length;
+		const height = Math.max(logoRows, lines.length);
+		const logoTop = Math.floor((height - logoRows) / 2);
 		for (let i = 0; i < height; i++) {
-			const art = PI_LOGO[i] ?? " ".repeat(logoWidth);
+			const logoIndex = i - logoTop;
+			const art = logoIndex >= 0 && logoIndex < logoRows ? (PI_LOGO_SMALL[logoIndex] ?? "") : " ".repeat(logoWidth);
 			const text = i < lines.length ? truncateToWidth(lines[i] ?? "", textWidth, "") : "";
 			const pad = " ".repeat(Math.max(0, textWidth - visibleWidth(text)));
 			rows.push(
