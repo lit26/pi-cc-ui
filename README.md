@@ -85,13 +85,26 @@ extension/
     builtins.ts     CC-style rendering for built-in tools
     diff.ts         CC-faithful diff rendering (upstream pi-cc-ui 0.5.0 layout)
     grouping.ts     grouped consecutive tool calls (single row / branch rows)
-    collapse.ts     collapsed tool output state
 theme/              six CC theme JSON files
+tests/              bun test — diff/palette/status-line pure-function coverage
 ```
+
+## Development
+
+Pure functions are covered by `bun test` (no build step — pi loads `extension/index.ts`
+as TypeScript). Type checking is strict and must stay clean:
+
+```sh
+bun test          # 43 tests across tests/
+npm run typecheck # tsc --noEmit
+```
+
+`settings.ts` holds the `~/.pi/agent/pi-cc-ui.json` preference file (palette overrides,
+shared with upstream pi-cc-ui).
 
 ## Requirements
 
-Runs inside pi (`@earendil-works/pi-coding-agent`); pi core packages are peer dependencies provided by the host. Tested against pi 0.84.x.
+Runs inside pi (`@earendil-works/pi-coding-agent`); pi core packages are peer dependencies provided by the host. Tested against pi 1.0.4.
 
 ## License
 

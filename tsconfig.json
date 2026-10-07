@@ -1,0 +1,24 @@
+{
+	"compilerOptions": {
+		"target": "ES2023",
+		"lib": ["ES2023"],
+		"module": "Preserve",
+		"moduleResolution": "bundler",
+		"moduleDetection": "force",
+		"types": ["node", "bun"],
+
+		"strict": true,
+		"noUncheckedIndexedAccess": true,
+		"noImplicitOverride": true,
+		"noFallthroughCasesInSwitch": true,
+		"noUnusedLocals": true,
+		"noUnusedParameters": true,
+
+		"verbatimModuleSyntax": true,
+		"isolatedModules": true,
+		"resolveJsonModule": true,
+		"skipLibCheck": true,
+		"noEmit": true
+	},
+	"include": ["extension/**/*.ts", "tests/**/*.ts"]
+}

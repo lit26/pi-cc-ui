@@ -39,5 +39,14 @@
       "./theme"
     ]
   },
-  "type": "module"
+  "type": "module",
+  "scripts": {
+    "test": "bun test",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.4.2",
+    "@types/node": "^22.20.5",
+    "typescript": "^5.9.3"
+  }
 }
