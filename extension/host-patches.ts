@@ -64,6 +64,11 @@
  *       each site. Components built at pad `0` keep their own gutter (the
  *       turn footer draws its own leading space).
  *
+ * Patch 5 — Loader.prototype.render:
+ *   De-indents the live "working" spinner row only. pi-tui builds every Loader
+ *   at paddingX 1, so this extension's CC spinner line (`✻ Brewing…`, glyph at
+ *   column 0) rendered one column right.
+ *
  * All wrappers call the original method and are Symbol-flag guarded
  * (idempotent across reloads and across multiple extension instances).
  */
@@ -75,7 +80,7 @@ import {
 	ToolExecutionComponent,
 	UserMessageComponent,
 } from "@earendil-works/pi-coding-agent";
-import { Container } from "@earendil-works/pi-tui";
+import { Container, Loader } from "@earendil-works/pi-tui";
 
 // CSI + OSC (BEL or ST terminated) + charset selects. OSC matters: the host
 // render wraps a message's first/last row in OSC133 zone marks, which the
@@ -93,6 +98,7 @@ const SETTINGS_PAD_FLAG = Symbol.for("better-cc-ui:settings-output-pad");
 const SHELL_PAD_FLAG = Symbol.for("better-cc-ui:tool-shell-pad");
 const CHILD_PAD_FLAG = Symbol.for("better-cc-ui:transcript-child-pad");
 const REGISTER_PAD_FLAG = Symbol.for("better-cc-ui:transcript-register");
+const WORKING_PAD_FLAG = Symbol.for("better-cc-ui:working-indicator-pad");
 const STATUS_FLAG = Symbol.for("better-cc-ui:tool-output-status");
 
 /** CC column for transcript rows = the tool-name column (`● ` = 2). */
@@ -266,6 +272,22 @@ export function installHostPatches(): void {
 			return originalToolRender.call(this, width);
 		};
 		tProto[SHELL_PAD_FLAG] = true;
+	}
+
+	// Patch 5 — the working spinner row. pi-tui Loader extends Text at
+	// paddingX 1 (loader.js:18), so the CC spinner line (`✻ Brewing…`, glyph at
+	// column 0 — SpinnerAnimationRow.tsx) rendered as ` ✻ Brewing…`. Only the
+	// live "working" indicator is de-indented; retry/compaction rows keep the
+	// host indent.
+	// eslint-disable-next-line @typescript-eslint/no-explicit-any
+	const loaderProto = Loader.prototype as any;
+	if (!loaderProto[WORKING_PAD_FLAG] && typeof loaderProto.render === "function") {
+		const originalLoaderRender = loaderProto.render;
+		loaderProto.render = function ccUiAlignedWorkingRow(this: { kind?: string; paddingX?: number }, width: number): string[] {
+			if (this.kind === "working" && this.paddingX === 1) this.paddingX = 0;
+			return originalLoaderRender.call(this, width);
+		};
+		loaderProto[WORKING_PAD_FLAG] = true;
 	}
 
 	if (!imProto[STATUS_FLAG] && typeof imProto.showStatus === "function") {
