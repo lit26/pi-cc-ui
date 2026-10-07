@@ -79,8 +79,11 @@ export function registerTurnFooter(pi: ExtensionAPI): void {
 
 	pi.registerEntryRenderer<TurnFooterData>("cc-turn-footer", (entry, _options, theme) => {
 		const data = entry.data ?? { ms: 0, verb: "Worked" };
-		// Gutter: one leading space so the ✻ sits in the same column as the
-		// assistant bullet (dsh-tui GUTTER).
-		return new Text(theme.fg("dim", ` ✻ ${data.verb} for ${formatTurnDuration(data.ms)}`), 0, 0);
+		// CC TurnDurationMessage (SystemTextMessage.tsx): `✻` sits in a 2-column
+		// marker field at column 0 and the verb starts at column 2. Emit that
+		// directly — the Text is pad 0, so a manual leading space here would
+		// push the glyph to column 1 (the "extra blank space" regression) and
+		// the verb to column 3.
+		return new Text(theme.fg("dim", `✻ ${data.verb} for ${formatTurnDuration(data.ms)}`), 0, 0);
 	});
 }
